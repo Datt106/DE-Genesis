@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+*.pyc
+*.class
+target/
+output/
+warehouse/
+spark-warehouse/
+metastore_db/
+derby.log
+*.log
+data/olist/
+~$*.docx
+~WRL*.tmp

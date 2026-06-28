@@ -1,0 +1,8 @@
+{"ts":"2026-06-25T09:00:01Z","service":"checkout","method":"POST","path":"/orders","status_code":201,"latency_ms":145}
+{"ts":"2026-06-25T09:00:05Z","service":"catalog","method":"GET","path":"/products","status_code":200,"latency_ms":35}
+{"ts":"2026-06-25T09:00:14Z","service":"payment","method":"POST","path":"/payments","status_code":502,"latency_ms":920}
+{"ts":"2026-06-25T09:01:02Z","service":"catalog","method":"GET","path":"/products/501","status_code":200,"latency_ms":42}
+{"ts":"2026-06-25T09:01:35Z","service":"checkout","method":"POST","path":"/orders","status_code":201,"latency_ms":180}
+{"ts":"2026-06-25T09:02:10Z","service":"payment","method":"POST","path":"/payments","status_code":200,"latency_ms":230}
+{"ts":"2026-06-25T09:02:40Z","service":"catalog","method":"GET","path":"/products","status_code":500,"latency_ms":610}
+{"ts":"2026-06-25T09:03:05Z","service":"checkout","method":"GET","path":"/orders/1001","status_code":200,"latency_ms":85}

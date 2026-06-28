@@ -1,0 +1,11 @@
+order_id,order_date,customer_id,customer_name,product_id,product_name,category,quantity,unit_price,region
+1,2026-06-01,101,An,501,Laptop,Electronics,1,1200.00,Ha Noi
+2,2026-06-01,102,Binh,502,Keyboard,Electronics,2,45.50,Da Nang
+3,2026-06-02,103,Chi,503,Desk,Furniture,1,180.00,Ho Chi Minh
+4,2026-06-03,101,An,504,Chair,Furniture,4,75.00,Ha Noi
+5,2026-06-04,104,Dung,505,Notebook,Office,10,2.50,Can Tho
+6,2026-06-04,105,Ha,501,Laptop,Electronics,1,1195.00,Da Nang
+7,2026-06-05,106,Long,506,Monitor,Electronics,2,220.00,Ho Chi Minh
+8,2026-06-05,102,Binh,507,Mouse,Electronics,3,18.00,Da Nang
+9,2026-06-06,107,Minh,508,Pen,Office,20,1.20,Ha Noi
+10,2026-06-07,108,Trang,503,Desk,Furniture,1,175.00,Can Tho
