@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "verified_at_utc": "2026-07-14T02:45:08.7441189Z",
+  "environment": {
+    "spark_version": "3.5.1",
+    "spark_master": "spark://spark-master:7077",
+    "application_id": "app-20260714023623-0003",
+    "executor_cores": 4,
+    "executor_memory_mib": 3072,
+    "shuffle_partitions": 16,
+    "output_partitions": 16,
+    "hdfs_replication": 1
+  },
+  "dataset": {
+    "source": "Olist order items mở rộng có kiểm soát",
+    "base_rows": 112650,
+    "replica_count": 59,
+    "rows": 6646350,
+    "target_bytes": 1073741824,
+    "input_bytes": 1188929308,
+    "input_gib": 1.1073,
+    "is_synthetic_expansion": true
+  },
+  "quality": {
+    "curated_rows": 6646350,
+    "unmatched_orders": 0,
+    "unmatched_customers": 0,
+    "unmatched_products": 0,
+    "unmatched_sellers": 0,
+    "dataframe_sql_equal": true,
+    "dataframe_rdd_equal": true,
+    "format_checksums_equal": true,
+    "measured_trials": 18,
+    "warmup_trials": 6,
+    "hdfs_missing_blocks": 0,
+    "hdfs_corrupt_blocks": 0,
+    "hdfs_under_replicated_blocks": 0,
+    "hdfs_status": "HEALTHY",
+    "run_status": "success"
+  },
+  "formats": [
+    {
+      "format": "csv",
+      "compression": "none",
+      "data_bytes": 2362228970,
+      "data_file_count": 24,
+      "write_seconds": 33.415958,
+      "full_scan_median_seconds": 14.144309,
+      "filter_group_median_seconds": 8.313719,
+      "size_ratio_vs_csv": 1.0
+    },
+    {
+      "format": "parquet",
+      "compression": "snappy",
+      "data_bytes": 203140258,
+      "data_file_count": 24,
+      "write_seconds": 23.150882,
+      "full_scan_median_seconds": 1.169912,
+      "filter_group_median_seconds": 1.245731,
+      "size_ratio_vs_csv": 0.085995,
+      "full_scan_speedup_vs_csv": 12.09
+    },
+    {
+      "format": "orc",
+      "compression": "snappy",
+      "data_bytes": 167822712,
+      "data_file_count": 24,
+      "write_seconds": 27.657897,
+      "full_scan_median_seconds": 1.732526,
+      "filter_group_median_seconds": 1.278043,
+      "size_ratio_vs_csv": 0.071044,
+      "full_scan_speedup_vs_csv": 8.164
+    }
+  ],
+  "warning_vi": "Kết quả phản ánh máy lab Docker/Windows tại thời điểm đo và có thể chịu ảnh hưởng của filesystem cache; không phải cold-disk benchmark hoặc SLA production."
+}
