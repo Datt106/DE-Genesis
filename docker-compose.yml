@@ -9,14 +9,21 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-de_user}:${POSTGRES_PASSWORD:-de_password}@postgres:5432/airflow
+    AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-de_user}:${POSTGRES_PASSWORD:-de_password}@postgres:5432/${POSTGRES_DB:-de_roadmap}
     AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-de_genesis_local_secret}
     POSTGRES_DB: ${POSTGRES_DB:-de_roadmap}
     POSTGRES_HOST: postgres
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-de_password}
     POSTGRES_PORT: "5432"
     POSTGRES_USER: ${POSTGRES_USER:-de_user}
+    SPARK_DRIVER_HOST: airflow-scheduler
     SPARK_MASTER_URL: spark://spark-master:7077
+    PYTHONPATH: /workspace
+    MOCK_API_URL: http://mock-api:8000
+    AIRFLOW_API_USERNAME: ${AIRFLOW_API_USERNAME:-admin}
+    AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-admin}
+    WEEK6_INVALID_RATE_THRESHOLD: ${WEEK6_INVALID_RATE_THRESHOLD:-0}
   depends_on:
     postgres:
       condition: service_healthy
@@ -30,6 +37,27 @@ x-airflow-common: &airflow-common
     - airflow_logs:/opt/airflow/logs
 
 services:
+  mock-api:
+    build:
+      context: .
+      dockerfile: mock_api/Dockerfile
+    container_name: de-genesis-mock-api
+    environment:
+      PROMOTION_SEED_FILE: /data/olist/olist_products_dataset.csv
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - de-genesis
+    ports:
+      - "${MOCK_API_PORT:-8000}:8000"
+    profiles:
+      - workflow
+    volumes:
+      - ./data/olist:/data/olist:ro
+
   workspace:
     build:
       context: .
@@ -56,6 +84,7 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER:-de_user}
       PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /workspace
       SPARK_MASTER_URL: spark://spark-master:7077
     networks:
       - de-genesis
@@ -150,10 +179,14 @@ services:
       - ./:/workspace:ro
 
   spark-master:
-    image: apache/spark:3.5.1
+    build:
+      context: .
+      dockerfile: .docker/spark/Dockerfile
+    image: de-genesis-spark:3.5.1-python3.11
     container_name: de-genesis-spark-master
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
     environment:
+      SPARK_MASTER_OPTS: -Dspark.ui.prometheus.enabled=true
       SPARK_RPC_AUTHENTICATION_ENABLED: "no"
       SPARK_RPC_ENCRYPTION_ENABLED: "no"
       SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED: "no"
@@ -169,16 +202,21 @@ services:
       - workflow
       - monitoring
     volumes:
+      - ./config/spark/metrics.properties:/opt/spark/conf/metrics.properties:ro
       - ./:/workspace
 
   spark-worker:
-    image: apache/spark:3.5.1
+    build:
+      context: .
+      dockerfile: .docker/spark/Dockerfile
+    image: de-genesis-spark:3.5.1-python3.11
     container_name: de-genesis-spark-worker
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077", "--webui-port", "8081"]
     depends_on:
       - spark-master
     environment:
       SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_OPTS: -Dspark.ui.prometheus.enabled=true
       SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-2}
       SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-2G}
       SPARK_WORKER_WEBUI_PORT: 8081
@@ -192,6 +230,7 @@ services:
       - workflow
       - monitoring
     volumes:
+      - ./config/spark/metrics.properties:/opt/spark/conf/metrics.properties:ro
       - ./:/workspace
 
   kafka:
@@ -249,6 +288,8 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      mock-api:
+        condition: service_healthy
     ports:
       - "${AIRFLOW_PORT:-8088}:8080"
 
@@ -261,14 +302,34 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      mock-api:
+        condition: service_healthy
 
   nifi:
-    image: apache/nifi:1.27.0
+    build:
+      context: .
+      dockerfile: .docker/nifi/Dockerfile
+    image: de-genesis-nifi:local
     container_name: de-genesis-nifi
     environment:
       NIFI_WEB_HTTPS_PORT: 8443
       SINGLE_USER_CREDENTIALS_PASSWORD: ${NIFI_PASSWORD:-admin_password_123}
       SINGLE_USER_CREDENTIALS_USERNAME: ${NIFI_USER:-admin}
+      AIRFLOW_API_URL: http://airflow-webserver:8080
+      AIRFLOW_API_USERNAME: ${AIRFLOW_API_USERNAME:-admin}
+      AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-admin}
+      MOCK_API_URL: http://mock-api:8000
+      POSTGRES_DB: ${POSTGRES_DB:-de_roadmap}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-de_password}
+      POSTGRES_USER: ${POSTGRES_USER:-de_user}
+    depends_on:
+      airflow-webserver:
+        condition: service_started
+      mock-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - de-genesis
     ports:
@@ -281,10 +342,18 @@ services:
       - nifi_flowfile:/opt/nifi/nifi-current/flowfile_repository
       - nifi_content:/opt/nifi/nifi-current/content_repository
       - nifi_provenance:/opt/nifi/nifi-current/provenance_repository
+      - ./exercises/week5/nifi:/opt/nifi/week5:ro
 
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: de-genesis-prometheus
+    depends_on:
+      pipeline-metrics:
+        condition: service_healthy
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
     networks:
       - de-genesis
     ports:
@@ -293,7 +362,42 @@ services:
       - monitoring
     volumes:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
+
+  pipeline-metrics:
+    build:
+      context: .
+      dockerfile: exercises/week6/monitoring/Dockerfile
+    container_name: de-genesis-pipeline-metrics
+    depends_on:
+      airflow-webserver:
+        condition: service_started
+      mock-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW_HEALTH_URL: http://airflow-webserver:8080/health
+      METRICS_PORT: "9108"
+      MOCK_API_HEALTH_URL: http://mock-api:8000/health
+      POSTGRES_DB: ${POSTGRES_DB:-de_roadmap}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-de_password}
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-de_user}
+      SPARK_HEALTH_URL: http://spark-master:8080
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9108/metrics')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - de-genesis
+    ports:
+      - "${PIPELINE_METRICS_PORT:-9108}:9108"
+    profiles:
+      - monitoring
 
   grafana:
     image: grafana/grafana:10.4.3
@@ -310,6 +414,8 @@ services:
     profiles:
       - monitoring
     volumes:
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
 
 networks:

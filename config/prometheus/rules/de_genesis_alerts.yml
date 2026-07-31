@@ -1,0 +1,56 @@
+groups:
+  - name: de-genesis-pipeline
+    rules:
+      - alert: PipelineMetricsExporterDown
+        expr: up{job="pipeline-metrics"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Pipeline metrics exporter không sẵn sàng
+          description: Prometheus không scrape được pipeline-metrics trong ít nhất 1 phút.
+
+      - alert: PipelineDependencyDown
+        expr: de_genesis_dependency_up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dependency {{ $labels.dependency }} không sẵn sàng"
+          description: Dependency nội bộ đã không sẵn sàng trong ít nhất 2 phút.
+
+      - alert: PipelineLastRunFailed
+        expr: de_genesis_pipeline_last_run_success == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Run gần nhất của {{ $labels.pipeline_name }} thất bại"
+          description: Trạng thái run gần nhất chưa trở lại success.
+
+      - alert: PipelineDataQualityFailed
+        expr: de_genesis_pipeline_last_quality_failures > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Quality gate của {{ $labels.pipeline_name }} thất bại"
+          description: "Run gần nhất có {{ $value }} quality check blocking thất bại."
+
+      - alert: PipelineStale
+        expr: time() - de_genesis_pipeline_last_success_timestamp_seconds > 93600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.pipeline_name }} không có run thành công mới"
+          description: Lần thành công gần nhất đã cách hiện tại hơn 26 giờ.
+
+      - alert: SparkWorkerUnavailable
+        expr: up{job="spark-worker"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Spark worker không được Prometheus scrape
+          description: Spark worker metrics endpoint không sẵn sàng trong ít nhất 2 phút.
