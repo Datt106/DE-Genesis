@@ -1,0 +1,237 @@
+{
+  "format": "de-genesis-nifi-flow/v1",
+  "name": "DE Genesis Week 5 - Promotion Ingestion",
+  "nifiVersion": "1.27.0",
+  "description": "Định nghĩa portable của flow NiFi-centric. Các processor, relationship và parameter được kiểm tra bằng tests/test_nifi_flow_definition.py.",
+  "parameterContext": {
+    "name": "week5-local",
+    "parameters": {
+      "mock.api.url": "http://mock-api:8000",
+      "airflow.api.url": "http://airflow-webserver:8080",
+      "airflow.username": "admin",
+      "airflow.password": null,
+      "postgres.host": "postgres",
+      "postgres.port": "5432",
+      "postgres.database": "de_roadmap",
+      "postgres.username": "de_user",
+      "postgres.password": null,
+      "api.page.size": "100"
+    },
+    "sensitiveParameters": [
+      "airflow.password",
+      "postgres.password"
+    ]
+  },
+  "controllerServices": [
+    {
+      "id": "week5-json-reader",
+      "type": "JsonTreeReader",
+      "properties": {
+        "Schema Access Strategy": "Infer Schema"
+      }
+    },
+    {
+      "id": "week5-postgres-pool",
+      "type": "DBCPConnectionPool",
+      "properties": {
+        "Database Connection URL": "jdbc:postgresql://#{postgres.host}:#{postgres.port}/#{postgres.database}",
+        "Database Driver Class Name": "org.postgresql.Driver",
+        "Database Driver Location(s)": "/opt/nifi/nifi-current/lib/postgresql.jar",
+        "Database User": "#{postgres.username}",
+        "Password": "#{postgres.password}"
+      }
+    }
+  ],
+  "processors": [
+    {
+      "id": "generate-batch",
+      "name": "01 - Tạo batch_id",
+      "type": "GenerateFlowFile",
+      "schedulingStrategy": "TIMER_DRIVEN",
+      "schedulingPeriod": "1 hour",
+      "properties": {
+        "Custom Text": "",
+        "batch_id": "${now():format('yyyyMMddHHmmss')}",
+        "page": "1"
+      },
+      "autoTerminatedRelationships": []
+    },
+    {
+      "id": "invoke-promotion-api",
+      "name": "02 - Gọi Promotion API",
+      "type": "InvokeHTTP",
+      "properties": {
+        "HTTP Method": "GET",
+        "Remote URL": "#{mock.api.url}/api/v1/promotions?page=${page}&page_size=#{api.page.size}",
+        "Connection Timeout": "5 sec",
+        "Read Timeout": "10 sec",
+        "Response Generation Required": "true"
+      },
+      "autoTerminatedRelationships": [
+        "Original"
+      ]
+    },
+    {
+      "id": "route-api-status",
+      "name": "03 - Phân loại HTTP API",
+      "type": "RouteOnAttribute",
+      "properties": {
+        "success": "${invokehttp.status.code:equals('200')}",
+        "retryable": "${invokehttp.status.code:equals('429'):or(${invokehttp.status.code:startsWith('5')})}",
+        "terminal": "${invokehttp.status.code:startsWith('4'):and(${invokehttp.status.code:equals('429'):not()})}"
+      },
+      "autoTerminatedRelationships": [
+        "unmatched"
+      ]
+    },
+    {
+      "id": "split-promotions",
+      "name": "04 - Tách promotion records",
+      "type": "SplitJson",
+      "properties": {
+        "JsonPath Expression": "$.data[*]"
+      },
+      "autoTerminatedRelationships": [
+        "original"
+      ]
+    },
+    {
+      "id": "extract-fields",
+      "name": "05 - Trích xuất khóa và metadata",
+      "type": "EvaluateJsonPath",
+      "properties": {
+        "Destination": "flowfile-attribute",
+        "promotion_id": "$.promotion_id",
+        "product_id": "$.product_id",
+        "source_updated_at": "$.updated_at"
+      },
+      "autoTerminatedRelationships": []
+    },
+    {
+      "id": "hash-payload",
+      "name": "05b - Tính SHA-256 payload",
+      "type": "HashContent",
+      "properties": {
+        "Hash Algorithm": "SHA-256",
+        "Attribute Name": "payload_hash",
+        "Fail When Empty": "true"
+      },
+      "autoTerminatedRelationships": []
+    },
+    {
+      "id": "validate-record",
+      "name": "06 - Kiểm tra khóa bắt buộc",
+      "type": "RouteOnAttribute",
+      "properties": {
+        "valid": "${promotion_id:isEmpty():not():and(${product_id:isEmpty():not()})}",
+        "invalid": "${promotion_id:isEmpty():or(${product_id:isEmpty()})}"
+      },
+      "autoTerminatedRelationships": [
+        "unmatched"
+      ]
+    },
+    {
+      "id": "prepare-database-record",
+      "name": "07 - Bổ sung metadata raw",
+      "type": "JoltTransformJSON",
+      "properties": {
+        "Jolt Transformation DSL": "Chain",
+        "Jolt Specification": "[{\"operation\":\"shift\",\"spec\":{\"*\":\"payload.&\",\"promotion_id\":\"promotion_id\",\"product_id\":\"product_id\",\"updated_at\":\"source_updated_at\"}},{\"operation\":\"default\",\"spec\":{\"batch_id\":\"${batch_id}\",\"source_system\":\"nifi\",\"payload_hash\":\"${payload_hash}\",\"is_valid\":true}}]"
+      },
+      "autoTerminatedRelationships": []
+    },
+    {
+      "id": "put-raw-postgres",
+      "name": "08 - Ghi week5_raw.promotions_nifi",
+      "type": "PutDatabaseRecord",
+      "properties": {
+        "Record Reader": "week5-json-reader",
+        "Database Connection Pooling Service": "week5-postgres-pool",
+        "Statement Type": "UPSERT",
+        "Table Name": "promotions_nifi",
+        "Schema Name": "week5_raw",
+        "Update Keys": "source_system,promotion_id,payload_hash",
+        "Unmatched Column Behavior": "Ignore Unmatched Columns"
+      },
+      "autoTerminatedRelationships": []
+    },
+    {
+      "id": "wait-batch-complete",
+      "name": "09 - Gom tín hiệu batch hoàn tất",
+      "type": "MergeContent",
+      "properties": {
+        "Merge Strategy": "Defragment",
+        "Correlation Attribute Name": "batch_id",
+        "Maximum Number of Entries": "10000",
+        "Max Bin Age": "2 min"
+      },
+      "autoTerminatedRelationships": [
+        "original"
+      ]
+    },
+    {
+      "id": "build-airflow-trigger",
+      "name": "10 - Tạo payload trigger Airflow",
+      "type": "ReplaceText",
+      "properties": {
+        "Replacement Strategy": "Always Replace",
+        "Replacement Value": "{\"dag_run_id\":\"nifi__${batch_id}\",\"conf\":{\"source_mode\":\"nifi\",\"batch_id\":\"${batch_id}\",\"raw_table\":\"week5_raw.promotions_nifi\"}}"
+      },
+      "autoTerminatedRelationships": []
+    },
+    {
+      "id": "trigger-airflow",
+      "name": "11 - Trigger Airflow REST API",
+      "type": "InvokeHTTP",
+      "properties": {
+        "HTTP Method": "POST",
+        "Remote URL": "#{airflow.api.url}/api/v1/dags/de_genesis_week5_nifi_downstream/dagRuns",
+        "Request Content-Type": "application/json",
+        "Request Username": "#{airflow.username}",
+        "Request Password": "#{airflow.password}",
+        "Connection Timeout": "5 sec",
+        "Read Timeout": "10 sec"
+      },
+      "autoTerminatedRelationships": [
+        "Original"
+      ]
+    },
+    {
+      "id": "route-airflow-status",
+      "name": "12 - Phân loại kết quả trigger",
+      "type": "RouteOnAttribute",
+      "properties": {
+        "triggered": "${invokehttp.status.code:equals('200'):or(${invokehttp.status.code:equals('201')})}",
+        "duplicate": "${invokehttp.status.code:equals('409')}",
+        "unauthorized": "${invokehttp.status.code:equals('401')}",
+        "retryable": "${invokehttp.status.code:equals('429'):or(${invokehttp.status.code:startsWith('5')})}"
+      },
+      "autoTerminatedRelationships": [
+        "unmatched"
+      ]
+    }
+  ],
+  "connections": [
+    ["generate-batch", "success", "invoke-promotion-api"],
+    ["invoke-promotion-api", "Response", "route-api-status"],
+    ["route-api-status", "success", "split-promotions"],
+    ["route-api-status", "retryable", "invoke-promotion-api"],
+    ["split-promotions", "split", "extract-fields"],
+    ["extract-fields", "matched", "hash-payload"],
+    ["hash-payload", "success", "validate-record"],
+    ["validate-record", "valid", "prepare-database-record"],
+    ["prepare-database-record", "success", "put-raw-postgres"],
+    ["put-raw-postgres", "success", "wait-batch-complete"],
+    ["wait-batch-complete", "merged", "build-airflow-trigger"],
+    ["build-airflow-trigger", "success", "trigger-airflow"],
+    ["trigger-airflow", "Response", "route-airflow-status"],
+    ["route-airflow-status", "retryable", "trigger-airflow"]
+  ],
+  "failureQueues": [
+    "api-terminal-error",
+    "invalid-record",
+    "database-failure",
+    "airflow-unauthorized",
+    "airflow-terminal-error"
+  ]
+}
