@@ -630,17 +630,40 @@ Kết quả streaming ghi vào `output/week4`.
 
 ## Tuần 5: Airflow, NiFi và tích hợp API
 
-Khởi động workflow:
+Tuần 5 xây hai pipeline tương đương trên cùng Promotion API mô phỏng:
+
+- Airflow gọi API, ghi raw và điều phối Spark.
+- NiFi gọi API, ghi raw rồi kích hoạt Airflow qua REST API.
+
+Khởi động toàn bộ workflow:
 
 ```powershell
 .\scripts\start.ps1 -Target week5 -Build
 ```
 
-Mở Airflow tại <http://localhost:8088>, đăng nhập `admin` / `admin`, rồi bật DAG `de_genesis_roadmap_etl`. DAG mẫu sẽ nạp CSV vào PostgreSQL và chạy Spark job tạo report log. Riêng output của DAG Airflow được ghi trong container tại `/tmp/de-genesis-airflow/week6` để tránh lỗi quyền khi Spark ghi trực tiếp lên bind mount Windows.
+Tạo schema tuần 5:
 
-Mở NiFi tại <https://localhost:8443/nifi> để luyện dataflow kéo dữ liệu từ API hoặc file. Trình duyệt có thể cảnh báo chứng chỉ tự ký, bạn chọn tiếp tục cho môi trường local.
+```powershell
+docker compose exec workspace psql -h postgres -U de_user -d de_roadmap -f exercises/week5/sql/create_week5_schemas.sql
+```
+
+Mock API ở <http://localhost:8000/docs>. Mở Airflow tại
+<http://localhost:8088>, đăng nhập `admin` / `admin`, rồi bật:
+
+- `de_genesis_week5_airflow_ingestion`
+- `de_genesis_week5_nifi_downstream`
+
+Mở NiFi tại <https://localhost:8443/nifi> và làm theo
+`exercises/week5/nifi/huong_dan_import_flow.md`. Trình duyệt có thể cảnh báo
+chứng chỉ tự ký; chỉ tiếp tục trong môi trường local. Hướng dẫn chi tiết, cách
+chạy test và truy vấn đối soát nằm tại `exercises/week5/README.md`.
 
 ## Tuần 6: Production pipeline, monitoring và alerting
+
+Tuần 6 nâng pipeline Promotion thành DAG production chạy hằng ngày, có cửa sổ
+incremental, backfill thủ công, audit, retry, hai data-quality gate và
+watermark an toàn. Prometheus thu metrics từ pipeline, dependency và Spark;
+Grafana được provision sẵn data source cùng dashboard.
 
 Khởi động đầy đủ:
 
@@ -648,17 +671,28 @@ Khởi động đầy đủ:
 .\scripts\start.ps1 -Target week6 -Build
 ```
 
-Chạy Spark job xử lý log mẫu:
-
-```powershell
-docker compose exec spark-master spark-submit --master spark://spark-master:7077 /workspace/exercises/week6/log_report.py
-```
-
-Report nằm trong `output/week6`. Prometheus ở <http://localhost:9090>, Grafana ở <http://localhost:3000>. Trong Grafana, thêm data source Prometheus với URL nội bộ:
+Mở Airflow tại <http://localhost:8088> và bật DAG:
 
 ```text
-http://prometheus:9090
+de_genesis_week6_production_pipeline
 ```
+
+Để chạy batch mẫu có dữ liệu, trigger với:
+
+```json
+{
+  "batch_id": "week6-runtime-20260720",
+  "window_start": "2026-07-20T00:00:00Z",
+  "window_end": "2026-07-21T00:00:00Z",
+  "scenario": "success"
+}
+```
+
+Prometheus ở <http://localhost:9090>, trang alert ở
+<http://localhost:9090/alerts>, Grafana ở <http://localhost:3000> và metrics
+exporter ở <http://localhost:9108/metrics>. Dashboard
+`DE Genesis - Pipeline Production` được tạo tự động. Hướng dẫn backfill,
+quality gate, truy vấn audit và kiểm thử nằm tại `exercises/week6/README.md`.
 
 ## Cấu trúc thư mục
 
