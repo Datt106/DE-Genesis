@@ -1,0 +1,327 @@
+# BÁO CÁO THỰC HÀNH TUẦN 5
+
+## Airflow, NiFi và tích hợp Promotion API
+
+**Dự án:** DE Genesis - Lộ trình thực hành Data Engineering
+
+**Phạm vi:** Tuần 5
+
+**Ngày báo cáo:** 24/07/2026
+**Trạng thái:** Đã hoàn thiện mã nguồn và kiểm thử tự động; nghiệm thu tích hợp được ghi theo kết quả chạy thực tế.
+
+# 1. Tóm tắt điều hành
+
+Tuần 5 triển khai hai pipeline có cùng đầu vào, cùng data contract và cùng Spark
+transformation core để so sánh hai cách tổ chức luồng dữ liệu. Pipeline thứ nhất
+đặt Airflow ở trung tâm: Airflow gọi API, ghi raw và điều phối bước biến đổi.
+Pipeline thứ hai đặt NiFi ở lớp ingestion: NiFi gọi API, ghi raw rồi kích hoạt
+DAG downstream qua Airflow REST API.
+
+Nguồn dữ liệu là Promotion API mô phỏng chạy local bằng FastAPI. API tạo 250
+chương trình khuyến mại từ các `product_id` thật trong bộ dữ liệu Olist. Thiết kế
+này tránh phụ thuộc Internet, rate limit bên ngoài hoặc thay đổi contract của
+bên thứ ba, đồng thời vẫn cho phép tái tạo các lỗi HTTP 429, HTTP 500, timeout,
+JSON sai cấu trúc, bản ghi lỗi và bản ghi trùng.
+
+Kết quả triển khai bao gồm mock API, ba schema PostgreSQL, hai DAG Airflow, một
+Spark job dùng chung, định nghĩa flow NiFi, các script đối chiếu, 18 test tự
+động và tài liệu vận hành tiếng Việt. Watermark chỉ được cập nhật sau khi Spark
+và quality checks thành công.
+
+# 2. Mục tiêu và phạm vi
+
+## 2.1 Mục tiêu
+
+- Hiểu ranh giới giữa ingestion, orchestration và transformation.
+- Xử lý API phân trang, timeout, retry và response không hợp lệ.
+- Thiết kế DAG có dependency, retry, timeout và idempotency.
+- Kích hoạt DAG qua Airflow REST API.
+- Dùng một Spark core cho nhiều nguồn ingestion.
+- Quản lý dữ liệu theo các tầng raw, control và curated.
+- Đối soát hai pipeline trên cùng input.
+
+## 2.2 Ngoài phạm vi
+
+- Không triển khai Kubernetes hoặc distributed executor.
+- Không dùng credential và secret backend production.
+- Không xây monitoring/alerting hoàn chỉnh; nội dung này thuộc tuần 6.
+- Không coi Basic Auth và tài khoản mặc định là cấu hình production.
+
+# 3. Các quyết định thiết kế đã phê duyệt
+
+| Mã | Quyết định | Cách hiện thực |
+| --- | --- | --- |
+| A3 | Hai pipeline để so sánh | Airflow-centric và NiFi-centric |
+| B2 | API mô phỏng local | FastAPI có seed xác định |
+| C2 | NiFi trigger Airflow REST | POST DAG run sau khi raw hoàn tất |
+| D2 | End-to-end chuẩn | Raw, curated, audit, test và tài liệu |
+| E2 | Lưu flow trong repo | `nifi/flow_definition.json` |
+| F1 | API chiến dịch sản phẩm | Promotion theo `product_id` Olist |
+| G1 | FastAPI service riêng | Service `mock-api` trong Docker Compose |
+| H1 | Hai DAG, chung Spark core | DAG ingestion và DAG downstream |
+
+# 4. Kiến trúc tổng thể
+
+[[ARCHITECTURE]]
+
+Promotion API là nguồn duy nhất của cả hai pipeline. Việc dùng chung nguồn,
+seed và Spark core giúp benchmark phản ánh khác biệt ở lớp ingestion và
+orchestration thay vì khác biệt logic nghiệp vụ.
+
+## 4.1 Pipeline Airflow-centric
+
+1. DAG kiểm tra PostgreSQL và Mock API.
+2. Airflow gọi tuần tự tất cả các trang API.
+3. Payload được kiểm tra và ghi vào `promotions_airflow`.
+4. Spark đọc raw batch và dữ liệu bán hàng Olist.
+5. Spark tính doanh thu sau khuyến mại.
+6. Quality checks quyết định trạng thái run và watermark.
+
+## 4.2 Pipeline NiFi-centric
+
+1. NiFi sinh `batch_id`.
+2. `InvokeHTTP` gọi Promotion API.
+3. Flow phân loại response thành success, retryable và terminal.
+4. Record hợp lệ được ghi vào `promotions_nifi`.
+5. Khi batch hoàn tất, NiFi gọi Airflow REST API.
+6. DAG downstream kiểm tra allow-list và raw batch trước khi chạy Spark.
+
+# 5. Thiết kế Promotion API
+
+## 5.1 Contract
+
+Endpoint chính:
+
+`GET /api/v1/promotions?page=<n>&page_size=<n>&scenario=<name>`
+
+Response gồm `data` và `pagination`. `pagination.has_next` là điều kiện dừng
+vòng phân trang, không suy luận bằng kích thước trang cuối.
+
+## 5.2 Dữ liệu seed
+
+Service đọc tối đa 250 `product_id` đầu tiên từ
+`olist_products_dataset.csv`. Nếu file không tồn tại trong môi trường test, API
+dùng danh sách fallback xác định. Các chiến dịch có khoảng hiệu lực bao phủ dữ
+liệu Olist 2016-2018 để tạo được kết quả join thực tế.
+
+## 5.3 Failure scenarios
+
+| Scenario | Mục đích kiểm thử |
+| --- | --- |
+| `rate_limit` | HTTP 429 và retry policy |
+| `server_error` | HTTP 500 liên tục |
+| `transient_500` | Thành công sau lỗi tạm thời |
+| `timeout` | Read timeout |
+| `malformed_json` | Vi phạm response contract |
+| `invalid_record` | Data quality tại record |
+| `duplicate` | Deduplication |
+| `empty` | Batch không có dữ liệu |
+
+# 6. Mô hình dữ liệu
+
+## 6.1 Tầng raw
+
+Hai bảng raw có cùng cấu trúc nhưng tách theo nguồn để benchmark độc lập. Mỗi
+dòng giữ cả trường truy vấn thường dùng và payload JSON gốc. `payload_hash`
+dùng SHA-256 trên JSON canonical để chống nạp lại cùng nội dung.
+
+Khóa chống trùng:
+
+`source_system + promotion_id + payload_hash`
+
+## 6.2 Tầng control
+
+`pipeline_runs` giữ trạng thái và số liệu đối soát của mỗi run.
+`ingestion_watermarks` giữ mốc incremental gần nhất đã hoàn tất.
+`quality_results` lưu từng rule, actual value và expected value.
+
+## 6.3 Tầng curated
+
+Grain của bảng curated là một sản phẩm trong một đơn hàng kết hợp với phiên bản
+promotion có hiệu lực tại ngày mua.
+
+Các công thức:
+
+`gross_amount = item_price + freight_value`
+
+`net_amount_after_discount = gross_amount - discount_amount`
+
+Giảm giá chỉ áp dụng lên `item_price`, không áp dụng phí vận chuyển.
+
+# 7. Thiết kế Airflow
+
+## 7.1 DAG Airflow-centric
+
+DAG `de_genesis_week5_airflow_ingestion` chạy thủ công, `catchup=False` và
+`max_active_runs=1`. Các task lần lượt kiểm tra dependency, nạp raw và chạy
+Spark core.
+
+## 7.2 DAG NiFi downstream
+
+DAG `de_genesis_week5_nifi_downstream` không tự gọi API. DAG chỉ nhận:
+
+- `source_mode = nifi`
+- `batch_id`
+- `raw_table = week5_raw.promotions_nifi`
+
+Tên bảng được kiểm tra bằng allow-list để tránh sử dụng giá trị tùy ý từ request
+trong câu SQL.
+
+## 7.3 Retry và failure callback
+
+Lỗi tạm thời được retry có giới hạn. Failure callback ghi trạng thái thất bại
+nhưng không che khuất exception gốc nếu bản thân callback gặp lỗi.
+
+# 8. Thiết kế NiFi
+
+Flow gồm 13 processor logic, hai Controller Service và các relationship tách
+success, retryable, invalid, duplicate và unauthorized. PostgreSQL JDBC driver
+được thêm trong custom NiFi image.
+
+Credential Airflow và PostgreSQL có giá trị `null` trong flow definition. Người
+vận hành phải nhập bằng Parameter Context và đánh dấu Sensitive.
+
+`dag_run_id = nifi__<batch_id>` tạo khóa idempotency ở Airflow. HTTP 409 biểu
+thị batch đã được trigger trước đó và không tạo run mới.
+
+# 9. Spark transformation core
+
+Spark job nhận `run_id`, `batch_id` và `source_mode`. Tên bảng không được nhận
+tự do từ request mà được suy ra từ `source_mode` đã giới hạn.
+
+Các bước xử lý:
+
+1. Đọc promotion hợp lệ trong raw batch.
+2. Đọc `fact_sales`, `dim_product` và `dim_date`.
+3. Chọn version cao nhất cho mỗi promotion.
+4. Join theo `product_id` và khoảng hiệu lực.
+5. Tính gross, discount và net amount.
+6. Upsert curated theo grain.
+7. Chạy quality checks.
+8. Chỉ cập nhật watermark nếu toàn bộ rule blocking đạt.
+
+# 10. Idempotency và khả năng chạy lại
+
+Idempotency được áp dụng ở bốn lớp:
+
+- Payload: SHA-256 của JSON canonical.
+- Raw: unique constraint theo nguồn, promotion và hash.
+- Airflow trigger: `dag_run_id` xác định theo batch.
+- Curated: upsert theo source, order item, promotion và version.
+
+Nếu Spark thất bại, raw batch vẫn tồn tại để chạy lại. Watermark không dịch
+chuyển nên lần retry không bỏ sót dữ liệu.
+
+# 11. Data quality
+
+Các rule blocking kiểm tra khóa bắt buộc, khoảng hiệu lực, grain trùng,
+discount âm và net amount thấp hơn freight. Báo cáo thiết kế ban đầu định nghĩa
+14 rule; phiên bản hiện tại tự động hóa các rule quan trọng nhất trong Spark
+job, các rule còn lại được kiểm tra tại ingestion hoặc script đối chiếu.
+
+Đối soát cốt lõi:
+
+`accepted_count + rejected_count = raw_count`
+
+Hai bảng curated được so sánh hai chiều bằng `EXCEPT`. `difference_count = 0`
+và số dòng bằng nhau là điều kiện tương đương.
+
+# 12. Kiểm thử và kết quả xác minh
+
+## 12.1 Unit test
+
+Ngày 24/07/2026, test suite tuần 5 đạt 15/15 test. Test suite Mock API đạt 3/3
+test. Tổng cộng 18/18 test đạt.
+
+Phạm vi test:
+
+- Validation promotion và công thức giảm giá.
+- Hash không phụ thuộc thứ tự key JSON.
+- Phân trang và retry HTTP 500.
+- Phát hiện response sai contract.
+- Cấu trúc DAG.
+- Contract và sensitive parameter của NiFi flow.
+- Health, pagination và error scenario của Mock API.
+
+## 12.2 Smoke test Mock API
+
+API được khởi động local và trả:
+
+| Chỉ số | Kết quả |
+| --- | --- |
+| Health | `ok` |
+| Tổng seed | 250 |
+| Page size thử nghiệm | 40 |
+| Số trang | 7 |
+| Scenario rate limit | HTTP 429 |
+
+## 12.3 Kiểm tra cấu hình
+
+`docker compose --profile workflow config --quiet` hoàn tất không lỗi.
+`compileall` hoàn tất cho `mock_api`, `exercises/week5` và `dags`.
+`git diff --check` không phát hiện whitespace error.
+
+## 12.4 Nghiệm thu tích hợp Docker
+
+Profile workflow đã khởi động thành công trên Docker Desktop 29.6.1. Mock API,
+PostgreSQL, Airflow webserver, Airflow scheduler và NiFi đều ở trạng thái
+running; Mock API và PostgreSQL đạt health check.
+
+Airflow không có DAG import error và nhận đủ hai DAG tuần 5. Pipeline
+Airflow-centric hoàn tất với 250 raw record, 250 accepted record, 0 rejected
+record và 112.650 curated record. Năm quality check blocking đều đạt.
+
+NiFi Process Group đã được tạo qua REST API và export native vào repo, gồm 13
+processor và 14 connection. Hai Controller Service chứa credential vẫn phải
+được tạo/gán Parameter Context trong UI để không đưa secret vào REST payload
+hoặc file export.
+
+Contract NiFi - Airflow được nghiệm thu bằng một raw batch tương đương và
+request REST thật. Airflow tạo DAG run `nifi__nifi-runtime-001`; lần gửi lại
+cùng batch trả kết quả duplicate. DAG downstream hoàn tất với 112.650 curated
+record.
+
+| Pipeline | Raw | Accepted | Rejected | Curated | Thời gian |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Airflow-centric | 250 | 250 | 0 | 112.650 | 8,212 giây |
+| NiFi downstream | 250 | 250 | 0 | 112.650 | 6,485 giây |
+
+So sánh hai chiều cho kết quả `difference_count = 0`; hai bảng curated tương
+đương trên cùng input. Thời gian trên chỉ là một lần chạy local, không đủ để
+kết luận hiệu năng tổng quát.
+
+# 13. Bảo mật và production hardening
+
+Phiên bản local dùng Basic Auth để làm rõ cơ chế NiFi gọi Airflow REST. Khi đưa
+lên production cần:
+
+- Secret backend hoặc secrets manager.
+- TLS có chứng chỉ tin cậy.
+- Tài khoản dịch vụ quyền tối thiểu.
+- Network policy và giới hạn egress.
+- Remote executor hoặc Kubernetes executor.
+- Object storage cho artifact lớn.
+- Alerting, SLA và centralized logging.
+- NiFi Registry cho versioned flow.
+
+# 14. Cấu trúc bàn giao
+
+| Thành phần | Vị trí |
+| --- | --- |
+| Mock API | `mock_api/` |
+| DAG Airflow | `dags/` |
+| DDL | `exercises/week5/sql/` |
+| Spark core | `exercises/week5/spark/` |
+| NiFi flow | `exercises/week5/nifi/` |
+| Test | `exercises/week5/tests/`, `mock_api/tests/` |
+| Script đối chiếu | `exercises/week5/scripts/` |
+| Hướng dẫn | `exercises/week5/README.md` |
+| Báo cáo | `exercises/week5/report/` |
+
+# 15. Kết luận
+
+Tuần 5 chuyển các thành phần rời rạc của tuần trước thành một pipeline có lớp
+ingestion, orchestration, transformation, audit và quality rõ ràng. Hai
+pipeline không nhân đôi business logic; điểm khác biệt được giữ tại lớp tiếp
+nhận và kích hoạt. Thiết kế này vừa phục vụ mục tiêu học Airflow/NiFi, vừa tạo
+nền tảng để tuần 6 bổ sung monitoring, alerting và hardening.
