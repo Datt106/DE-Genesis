@@ -36,6 +36,7 @@ def test_dag_orders_audit_quality_and_transform_tasks() -> None:
         'task_id="quality_gate_raw"',
         'task_id="run_spark_snapshot"',
         'task_id="quality_gate_curated"',
+        'task_id="publish_curated_snapshot"',
         'task_id="finalize_success"',
     ]
     positions = [source.index(task) for task in expected_order]

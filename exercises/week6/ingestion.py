@@ -10,6 +10,34 @@ from exercises.week5.common import DatabaseConfig, parse_datetime, payload_hash,
 from exercises.week6.repository import ensure_schema, update_counts
 
 
+VALID_PROMOTION_STATUSES = {"active", "inactive"}
+
+
+def validate_week6_promotion(payload: dict[str, Any]) -> list[str]:
+    """Bổ sung contract vận hành còn thiếu ở pipeline Tuần 5.
+
+    ``updated_at`` điều khiển incremental window và ``status`` quyết định một
+    promotion có được áp dụng hay không, vì vậy cả hai đều là trường blocking.
+    """
+
+    errors = validate_promotion(payload)
+    status = payload.get("status")
+    if status in (None, ""):
+        errors.append("status không được để trống")
+    elif status not in VALID_PROMOTION_STATUSES:
+        errors.append("status chỉ nhận active hoặc inactive")
+
+    updated_at = payload.get("updated_at")
+    if updated_at in (None, ""):
+        errors.append("updated_at không được để trống")
+    else:
+        try:
+            parse_datetime(updated_at)
+        except (TypeError, ValueError):
+            errors.append("updated_at không đúng ISO-8601")
+    return errors
+
+
 def fetch_incremental_promotions(
     api_url: str,
     *,
@@ -75,7 +103,7 @@ def ingest_incremental_batch(
     accepted = rejected = 0
     prepared: list[tuple[Any, ...]] = []
     for record_index, payload in enumerate(records):
-        errors = validate_promotion(payload)
+        errors = validate_week6_promotion(payload)
         digest = payload_hash(payload)
         duplicate_key = (payload.get("promotion_id"), digest)
         if duplicate_key in seen:
@@ -84,6 +112,10 @@ def ingest_incremental_batch(
         is_valid = not errors
         accepted += int(is_valid)
         rejected += int(not is_valid)
+        try:
+            source_updated_at = parse_datetime(payload.get("updated_at"))
+        except (TypeError, ValueError):
+            source_updated_at = None
         prepared.append(
             (
                 config["batch_id"],
@@ -91,7 +123,7 @@ def ingest_incremental_batch(
                 payload.get("promotion_id"),
                 payload.get("product_id"),
                 Json(payload),
-                parse_datetime(payload.get("updated_at")),
+                source_updated_at,
                 digest,
                 is_valid,
                 "; ".join(errors) or None,

@@ -74,14 +74,28 @@ def run_raw_quality_gate(config: dict[str, Any]) -> dict[str, Any]:
                    COUNT(*) FILTER (WHERE is_valid),
                    COUNT(*) FILTER (WHERE NOT is_valid),
                    COUNT(*) FILTER (
-                       WHERE source_updated_at < %s OR source_updated_at >= %s
+                       WHERE source_updated_at IS NULL
+                          OR source_updated_at < %s
+                          OR source_updated_at >= %s
+                   ),
+                   COUNT(*) FILTER (
+                       WHERE is_valid AND (
+                           payload->>'status' NOT IN ('active', 'inactive')
+                           OR NULLIF(payload->>'updated_at', '') IS NULL
+                       )
                    )
             FROM week6_raw.promotions
             WHERE batch_id=%s
             """,
             (config["window_start"], config["window_end"], config["batch_id"]),
         )
-        stored_count, stored_valid, stored_invalid, outside_window = cursor.fetchone()
+        (
+            stored_count,
+            stored_valid,
+            stored_invalid,
+            outside_window,
+            missing_operational_fields,
+        ) = cursor.fetchone()
 
     invalid_rate = rejected_count / raw_count if raw_count else 0.0
     checks = [
@@ -120,6 +134,13 @@ def run_raw_quality_gate(config: dict[str, Any]) -> dict[str, Any]:
             outside_window == 0,
             "source_updated_at phải thuộc cửa sổ [start, end)",
         ),
+        Check(
+            "DQ06_operational_fields",
+            missing_operational_fields,
+            "0",
+            missing_operational_fields == 0,
+            "Record hợp lệ bắt buộc có status và updated_at đúng contract",
+        ),
     ]
     raise_for_failures(config["run_id"], checks)
     return {"passed": True, "checks": len(checks), "invalid_rate": invalid_rate}
@@ -136,53 +157,66 @@ def run_curated_quality_gate(config: dict[str, Any]) -> dict[str, Any]:
             (config["run_id"],),
         )
         accepted_count, audited_curated = cursor.fetchone()
-        cursor.execute(
-            """
-            SELECT COUNT(*),
-                   COUNT(*) - COUNT(DISTINCT (order_id,item_number,promotion_id,promotion_version)),
-                   COUNT(*) FILTER (WHERE discount_amount < 0),
-                   COUNT(*) FILTER (WHERE net_amount_after_discount < freight_value)
-            FROM week6_curated.sales_promotion
-            """
-        )
+        if accepted_count > 0:
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) - COUNT(DISTINCT (order_id,item_number,promotion_id,promotion_version)),
+                       COUNT(*) FILTER (WHERE discount_amount < 0),
+                       COUNT(*) FILTER (WHERE net_amount_after_discount < freight_value)
+                FROM week6_curated.sales_promotion_staging
+                WHERE run_id=%s
+                """,
+                (config["run_id"],),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) - COUNT(DISTINCT (order_id,item_number,promotion_id,promotion_version)),
+                       COUNT(*) FILTER (WHERE discount_amount < 0),
+                       COUNT(*) FILTER (WHERE net_amount_after_discount < freight_value)
+                FROM week6_curated.sales_promotion
+                """
+            )
         curated_count, duplicate_count, negative_discount, net_floor_errors = cursor.fetchone()
         cursor.execute(
             "SELECT COUNT(*) FROM olist_olap.fact_sales"
         )
         source_sales_count = cursor.fetchone()[0]
 
-    should_match_snapshot = accepted_count > 0 or curated_count > 0
+    should_match_snapshot = source_sales_count > 0
     checks = [
         Check(
-            "DQ06_curated_audit_reconciliation",
+            "DQ07_curated_audit_reconciliation",
             curated_count - audited_curated,
             "0",
             curated_count == audited_curated,
             "Số dòng curated phải khớp audit",
         ),
         Check(
-            "DQ07_unique_curated_grain",
+            "DQ08_unique_curated_grain",
             duplicate_count,
             "0",
             duplicate_count == 0,
             "Grain curated không được trùng",
         ),
         Check(
-            "DQ08_nonnegative_discount",
+            "DQ09_nonnegative_discount",
             negative_discount,
             "0",
             negative_discount == 0,
             "discount_amount không được âm",
         ),
         Check(
-            "DQ09_net_amount_floor",
+            "DQ10_net_amount_floor",
             net_floor_errors,
             "0",
             net_floor_errors == 0,
             "net_amount_after_discount không được thấp hơn freight_value",
         ),
         Check(
-            "DQ10_snapshot_completeness",
+            "DQ11_snapshot_completeness",
             curated_count - source_sales_count if should_match_snapshot else 0,
             "0",
             not should_match_snapshot or curated_count == source_sales_count,

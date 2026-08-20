@@ -186,16 +186,16 @@ def add_cover(document: Document) -> None:
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     set_paragraph_spacing(subtitle, after=34, line=1.1)
     set_font(
-        subtitle.add_run("PRODUCTION PIPELINE,\nMONITORING VÀ CẢNH BÁO"),
+        subtitle.add_run("SERVICE LOG PIPELINE,\nMONITORING VÀ CẢNH BÁO"),
         15.5,
         DARK_BLUE,
         True,
     )
     metadata = [
         ("Dự án", "DE Genesis - Lộ trình thực hành Data Engineering"),
-        ("Phạm vi", "Production pipeline và observability đầu cuối"),
-        ("Công nghệ", "Airflow 2.9.3, Spark 3.5.1, PostgreSQL 16, Prometheus 2.52, Grafana 10.4"),
-        ("Ngày báo cáo", "31/07/2026"),
+        ("Phạm vi", "Service log pipeline và observability đầu cuối"),
+        ("Công nghệ", "Kafka 7.6, Spark 3.5.1, HDFS 3.2.1, Airflow 2.9.3, PostgreSQL 16"),
+        ("Ngày báo cáo", "14/08/2026"),
     ]
     for label, value in metadata:
         paragraph = document.add_paragraph()
@@ -256,7 +256,7 @@ def generate_architecture() -> None:
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (1800, 900), "white")
     draw = ImageDraw.Draw(image)
-    title = "KIẾN TRÚC PRODUCTION PIPELINE VÀ OBSERVABILITY TUẦN 6"
+    title = "KIẾN TRÚC SERVICE LOG PIPELINE VÀ OBSERVABILITY TUẦN 6"
     title_box = draw.textbbox((0, 0), title, font=load_image_font(36, True))
     draw.text(
         ((1800 - title_box[2]) / 2, 25),
@@ -265,12 +265,11 @@ def generate_architecture() -> None:
         fill="#19375A",
     )
     top = [
-        (35, 170, 260, 345, "Promotion API", "Incremental\nwindow"),
-        (330, 170, 555, 345, "Airflow", "Audit + retry\nbackfill"),
-        (625, 170, 850, 345, "Raw + DQ", "Validate\nblocking gate"),
-        (920, 170, 1145, 345, "Spark", "Snapshot\nrefresh"),
-        (1215, 170, 1440, 345, "Curated + DQ", "Grain +\nfinance rules"),
-        (1510, 170, 1765, 345, "Watermark", "Chỉ cập nhật\nsau success"),
+        (35, 170, 300, 345, "Log producer", "JSON event\nevent time"),
+        (360, 170, 625, 345, "Kafka", "3 partition\nreplication 1"),
+        (685, 170, 970, 345, "Spark Streaming", "Micro-batch 30 giây\ncheckpoint"),
+        (1030, 170, 1315, 345, "HDFS raw", "Parquet\nrotation 5 phút"),
+        (1375, 170, 1765, 345, "Live report", "Requests/phút + status\nHDFS/PostgreSQL"),
     ]
     for index, (*rect, box_title, subtitle) in enumerate(top):
         draw_box(draw, tuple(rect), box_title, subtitle, "#F2F4F7")
@@ -281,9 +280,10 @@ def generate_architecture() -> None:
                 (top[index + 1][0] - 10, (rect[1] + rect[3]) // 2),
             )
     bottom = [
-        (330, 590, 650, 770, "Metrics exporter", "Audit database\nDependency health"),
-        (740, 590, 1060, 770, "Prometheus", "4 scrape target\n6 alert rule"),
-        (1150, 590, 1470, 770, "Grafana", "Provisioned data source\n5 dashboard panel"),
+        (35, 590, 350, 770, "Airflow", "Report + backfill\nlịch 5 phút"),
+        (430, 590, 745, 770, "Staging + DQ", "7 blocking check\natomic publish"),
+        (825, 590, 1140, 770, "Canonical report", "Hai grain\nPostgreSQL + HDFS"),
+        (1220, 590, 1765, 770, "Prometheus + Grafana", "14 alert rule + 10 panel\nlag, failure, heartbeat"),
     ]
     for index, (*rect, box_title, subtitle) in enumerate(bottom):
         draw_box(draw, tuple(rect), box_title, subtitle, "#E8EEF5")
@@ -293,8 +293,10 @@ def generate_architecture() -> None:
                 (rect[2] + 10, (rect[1] + rect[3]) // 2),
                 (bottom[index + 1][0] - 10, (rect[1] + rect[3]) // 2),
             )
-    draw.line([(1635, 345), (1635, 500), (490, 500), (490, 590)], fill="#2E74B5", width=5)
-    draw.polygon([(490, 590), (480, 574), (500, 574)], fill="#2E74B5")
+    draw.line([(1172, 345), (1172, 500), (192, 500), (192, 590)], fill="#2E74B5", width=5)
+    draw.polygon([(192, 590), (182, 574), (202, 574)], fill="#2E74B5")
+    draw.line([(827, 345), (827, 520), (1492, 520), (1492, 590)], fill="#2E74B5", width=5)
+    draw.polygon([(1492, 590), (1482, 574), (1502, 574)], fill="#2E74B5")
     image.save(ARCHITECTURE_PATH)
 
 
@@ -423,17 +425,36 @@ def add_architecture(document: Document) -> None:
     doc_property = picture_run._r.xpath(".//wp:docPr")[0]
     doc_property.set(
         "descr",
-        "Sơ đồ Production Pipeline từ Promotion API qua Airflow, raw quality gate, Spark, curated quality gate và watermark; metrics được đưa vào Prometheus và Grafana.",
+        "Sơ đồ service log từ producer qua Kafka, Spark Structured Streaming, HDFS và PostgreSQL; Airflow tạo báo cáo cửa sổ đóng sau blocking DQ; telemetry được đưa vào Prometheus và Grafana.",
     )
     caption = document.add_paragraph()
     caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
     caption.paragraph_format.space_before = Pt(4)
     caption.paragraph_format.space_after = Pt(8)
     set_font(
-        caption.add_run("Hình 1. Kiến trúc production pipeline và observability tuần 6"),
+        caption.add_run("Hình 1. Kiến trúc service log pipeline và observability tuần 6"),
         9,
         MUTED,
         italic=True,
+    )
+
+
+def add_code_block(document: Document, lines: list[str]) -> None:
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.left_indent = Inches(0.12)
+    paragraph.paragraph_format.right_indent = Inches(0.12)
+    paragraph.paragraph_format.space_before = Pt(3)
+    paragraph.paragraph_format.space_after = Pt(7)
+    paragraph.paragraph_format.keep_together = True
+    properties = paragraph._p.get_or_add_pPr()
+    shading = OxmlElement("w:shd")
+    shading.set(qn("w:fill"), "F2F4F7")
+    properties.append(shading)
+    set_font(
+        paragraph.add_run("\n".join(lines)),
+        8.5,
+        NAVY,
+        name="Consolas",
     )
 
 
@@ -456,12 +477,24 @@ def parse_body(document: Document, markdown: str, bullet_num_id: int, decimal_nu
         if line == "[[ARCHITECTURE]]":
             flush()
             add_architecture(document)
+        elif line.startswith("```"):
+            flush()
+            language = line[3:].strip().lower()
+            index += 1
+            code_lines: list[str] = []
+            while index < len(lines) and not lines[index].startswith("```"):
+                code_lines.append(lines[index])
+                index += 1
+            if language != "mermaid":
+                add_code_block(document, code_lines)
         elif line.startswith("# "):
             flush()
             major_count += 1
-            if major_count > 1 and major_count in {4, 7, 10, 12, 14, 16}:
+            if major_count > 1 and major_count in {4, 7, 12, 14, 16}:
                 document.add_page_break()
             document.add_heading(line[2:], level=1)
+            if line.startswith("# 3. Kiến trúc"):
+                add_architecture(document)
         elif line.startswith("## "):
             flush()
             document.add_heading(line[3:], level=2)
@@ -470,13 +503,13 @@ def parse_body(document: Document, markdown: str, bullet_num_id: int, decimal_nu
             document.add_heading(line[4:], level=3)
         elif line.startswith("- "):
             flush()
-            paragraph = document.add_paragraph()
-            apply_numbering(paragraph, bullet_num_id)
+            paragraph = document.add_paragraph(style="List Bullet")
+            set_paragraph_spacing(paragraph, after=8, line=1.167)
             inline(paragraph, line[2:])
         elif re.match(r"^\d+\. ", line):
             flush()
-            paragraph = document.add_paragraph()
-            apply_numbering(paragraph, decimal_num_id)
+            paragraph = document.add_paragraph(style="List Number")
+            set_paragraph_spacing(paragraph, after=8, line=1.167)
             inline(paragraph, re.sub(r"^\d+\. ", "", line))
         elif line.startswith("|"):
             flush()
@@ -549,9 +582,9 @@ def build() -> None:
         decimal_num_id,
     )
     document.core_properties.title = "Báo cáo thực hành tuần 6 - DE Genesis"
-    document.core_properties.subject = "Production pipeline, monitoring và cảnh báo"
+    document.core_properties.subject = "Service log pipeline, monitoring và cảnh báo"
     document.core_properties.author = "DE Genesis"
-    document.core_properties.keywords = "Airflow, Spark, Prometheus, Grafana, Data Quality"
+    document.core_properties.keywords = "Kafka, Spark, HDFS, Airflow, Prometheus, Grafana, Data Quality"
     document.save(OUTPUT_PATH)
     audit_document(OUTPUT_PATH)
     print(OUTPUT_PATH)

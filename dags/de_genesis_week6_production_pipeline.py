@@ -12,6 +12,7 @@ from week6.tasks import (
     finish_run,
     ingest_incremental,
     initialize_audit,
+    publish_curated,
     quality_gate_curated,
     quality_gate_raw,
     resolve_configuration,
@@ -33,7 +34,7 @@ DEFAULT_ARGS = {
 
 with DAG(
     dag_id="de_genesis_week6_production_pipeline",
-    description="Promotion pipeline production có incremental window, audit, DQ gate và monitoring",
+    description="Promotion pipeline với watermark, staging, DQ gate và publish nguyên tử",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2026, 7, 20, tzinfo=timezone.utc),
     schedule="0 2 * * *",
@@ -69,6 +70,10 @@ with DAG(
         python_callable=quality_gate_curated,
         retries=0,
     )
+    publish = PythonOperator(
+        task_id="publish_curated_snapshot",
+        python_callable=publish_curated,
+    )
     finalize = PythonOperator(task_id="finalize_success", python_callable=finish_run)
     end = EmptyOperator(task_id="end")
 
@@ -81,6 +86,7 @@ with DAG(
         >> raw_gate
         >> transform
         >> curated_gate
+        >> publish
         >> finalize
         >> end
     )

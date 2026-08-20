@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Iterator
+from contextlib import closing
 from datetime import datetime
 
 import psycopg2
@@ -49,23 +50,53 @@ class DeGenesisCollector:
             "spark_master": os.getenv("SPARK_HEALTH_URL", "http://spark-master:8080"),
         }
         for name, url in endpoints.items():
-            dependency.add_metric([name], check_http(url))
+            dependency.add_metric([name], check_http(name, url))
 
         try:
-            with database_connection() as connection:
-                dependency.add_metric(["postgres"], 1)
-                yield dependency
-                yield from collect_database_metrics(connection)
+            connection = database_connection()
         except Exception:
             dependency.add_metric(["postgres"], 0)
             yield dependency
+            return
+
+        dependency.add_metric(["postgres"], 1)
+        yield dependency
+        collection_error = GaugeMetricFamily(
+            "de_genesis_metrics_collection_error",
+            "Không thu thập được metric từ một nhóm bảng PostgreSQL",
+            labels=["source"],
+        )
+        with closing(connection), connection:
+            for source, collector in (
+                ("pipeline", collect_database_metrics),
+                ("log_pipeline", collect_log_pipeline_metrics),
+            ):
+                try:
+                    yield from collector(connection)
+                    collection_error.add_metric([source], 0)
+                except Exception:
+                    connection.rollback()
+                    collection_error.add_metric([source], 1)
+        yield collection_error
 
 
-def check_http(url: str) -> int:
+def check_http(dependency_name: str, url: str) -> int:
     try:
         response = requests.get(url, timeout=3)
-        return int(response.status_code < 500)
-    except requests.RequestException:
+        if not 200 <= response.status_code < 300:
+            return 0
+        if dependency_name != "airflow":
+            return 1
+
+        payload = response.json()
+        return int(
+            all(
+                isinstance(payload.get(component), dict)
+                and payload[component].get("status") == "healthy"
+                for component in ("metadatabase", "scheduler")
+            )
+        )
+    except (requests.RequestException, ValueError, TypeError):
         return 0
 
 
@@ -82,7 +113,12 @@ def collect_database_metrics(connection) -> Iterator[GaugeMetricFamily]:
     )
     last_success_state = GaugeMetricFamily(
         "de_genesis_pipeline_last_run_success",
-        "Run gần nhất thành công là 1, trạng thái khác là 0",
+        "Run kết thúc gần nhất thành công là 1, thất bại là 0",
+        labels=["pipeline_name"],
+    )
+    running = GaugeMetricFamily(
+        "de_genesis_pipeline_running",
+        "Số run đang ở trạng thái chưa kết thúc",
         labels=["pipeline_name"],
     )
     last_duration = GaugeMetricFamily(
@@ -109,6 +145,7 @@ def collect_database_metrics(connection) -> Iterator[GaugeMetricFamily]:
             run_total,
             last_success,
             last_success_state,
+            running,
             last_duration,
             last_rows,
             quality_failures,
@@ -136,10 +173,22 @@ def collect_database_metrics(connection) -> Iterator[GaugeMetricFamily]:
 
         cursor.execute(
             f"""
+            SELECT pipeline_name,COUNT(*)
+            FROM ({union}) AS runs
+            WHERE status IN ('running','ingesting','transforming','publishing')
+            GROUP BY pipeline_name
+            """
+        )
+        for pipeline_name, count in cursor.fetchall():
+            running.add_metric([pipeline_name], count)
+
+        cursor.execute(
+            f"""
             SELECT DISTINCT ON (pipeline_name)
                 run_id,pipeline_name,status,started_at,finished_at,
                 raw_count,accepted_count,rejected_count,curated_count
             FROM ({union}) AS runs
+            WHERE status NOT IN ('running','ingesting','transforming','publishing')
             ORDER BY pipeline_name,started_at DESC
             """
         )
@@ -189,6 +238,7 @@ def collect_database_metrics(connection) -> Iterator[GaugeMetricFamily]:
         run_total,
         last_success,
         last_success_state,
+        running,
         last_duration,
         last_rows,
         quality_failures,
@@ -199,6 +249,121 @@ def relation_exists(connection, relation: str) -> bool:
     with connection.cursor() as cursor:
         cursor.execute("SELECT to_regclass(%s) IS NOT NULL", (relation,))
         return bool(cursor.fetchone()[0])
+
+
+def collect_log_pipeline_metrics(connection) -> Iterator[GaugeMetricFamily]:
+    expected_query_name = os.getenv(
+        "WEEK6_LOG_QUERY_NAME", "de_genesis_week6_service_logs"
+    )
+    ingestion_lag = GaugeMetricFamily(
+        "de_genesis_log_ingestion_lag_seconds",
+        "Độ trễ event lớn nhất của micro-batch log gần nhất",
+        labels=["query_name"],
+    )
+    stream_batch_timestamp = GaugeMetricFamily(
+        "de_genesis_log_stream_last_batch_timestamp_seconds",
+        "Thời điểm micro-batch log gần nhất kết thúc",
+        labels=["query_name"],
+    )
+    stream_batch_success = GaugeMetricFamily(
+        "de_genesis_log_stream_last_batch_success",
+        "Micro-batch log gần nhất thành công là 1, thất bại là 0",
+        labels=["query_name"],
+    )
+    stream_invalid_records = GaugeMetricFamily(
+        "de_genesis_log_stream_last_invalid_records",
+        "Số bản ghi log không hợp lệ trong micro-batch gần nhất",
+        labels=["query_name"],
+    )
+    report_success = GaugeMetricFamily(
+        "de_genesis_log_report_last_run_success",
+        "Run báo cáo log kết thúc gần nhất thành công là 1, thất bại là 0",
+    )
+    report_success_timestamp = GaugeMetricFamily(
+        "de_genesis_log_report_last_success_timestamp_seconds",
+        "Thời điểm run báo cáo log thành công gần nhất kết thúc",
+    )
+    report_run_timestamp = GaugeMetricFamily(
+        "de_genesis_log_report_last_run_timestamp_seconds",
+        "Thời điểm run báo cáo log terminal gần nhất kết thúc",
+    )
+
+    stream_values = (expected_query_name, 0.0, 0.0, 0, 0)
+
+    if relation_exists(connection, "week6_control.log_stream_batches"):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT query_name,finished_at,ingestion_lag_seconds,status,invalid_count
+                FROM week6_control.log_stream_batches
+                WHERE finished_at IS NOT NULL
+                ORDER BY finished_at DESC, stream_batch_id DESC
+                LIMIT 1
+                """
+            )
+            latest_batch = cursor.fetchone()
+        if latest_batch:
+            query_name, finished_at, lag_seconds, status, invalid_count = latest_batch
+            stream_values = (
+                query_name,
+                max(0.0, float(lag_seconds or 0)),
+                epoch(finished_at),
+                int(status == "success"),
+                int(invalid_count or 0),
+            )
+
+    query_name, lag_seconds, batch_timestamp, batch_success, invalid_records = (
+        stream_values
+    )
+    ingestion_lag.add_metric([query_name], lag_seconds)
+    stream_batch_timestamp.add_metric([query_name], batch_timestamp)
+    stream_batch_success.add_metric([query_name], batch_success)
+    stream_invalid_records.add_metric([query_name], invalid_records)
+
+    latest_report_status = 0
+    latest_report_timestamp = 0.0
+    latest_success_timestamp = 0.0
+
+    if relation_exists(connection, "week6_control.log_report_runs"):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status,COALESCE(finished_at,started_at)
+                FROM week6_control.log_report_runs
+                WHERE status IN ('success','failed')
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            )
+            latest_report = cursor.fetchone()
+            cursor.execute(
+                """
+                SELECT MAX(finished_at)
+                FROM week6_control.log_report_runs
+                WHERE status='success'
+                """
+            )
+            latest_success = cursor.fetchone()
+        if latest_report:
+            latest_report_status = int(latest_report[0] == "success")
+            latest_report_timestamp = epoch(latest_report[1])
+        if latest_success and latest_success[0]:
+            latest_success_timestamp = epoch(latest_success[0])
+
+    # Luôn phát time series kể cả cold start để alert "never succeeded" hoạt động.
+    report_success.add_metric([], latest_report_status)
+    report_run_timestamp.add_metric([], latest_report_timestamp)
+    report_success_timestamp.add_metric([], latest_success_timestamp)
+
+    yield from (
+        ingestion_lag,
+        stream_batch_timestamp,
+        stream_batch_success,
+        stream_invalid_records,
+        report_success,
+        report_run_timestamp,
+        report_success_timestamp,
+    )
 
 
 def count_quality_failures(connection, pipeline_name: str, run_id: str) -> int:

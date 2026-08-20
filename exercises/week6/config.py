@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -33,6 +33,8 @@ class RunConfiguration:
     window_end: str
     scenario: str
     invalid_rate_threshold: float
+    run_mode: str
+    batch_id_generated: bool
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -60,6 +62,7 @@ def resolve_run_configuration(
     default_invalid_rate_threshold: float = 0.0,
 ) -> RunConfiguration:
     values = conf or {}
+    explicit_window = "window_start" in values or "window_end" in values
     window_start = parse_utc(values.get("window_start", data_interval_start), "window_start")
     window_end = parse_utc(values.get("window_end", data_interval_end), "window_end")
     if window_end <= window_start:
@@ -67,6 +70,7 @@ def resolve_run_configuration(
     if window_end - window_start > MAX_BACKFILL_WINDOW:
         raise ConfigurationError("Mỗi backfill window không được vượt quá 31 ngày")
 
+    batch_id_generated = "batch_id" not in values
     batch_id = str(
         values.get(
             "batch_id",
@@ -98,4 +102,39 @@ def resolve_run_configuration(
         window_end=window_end.isoformat(),
         scenario=scenario,
         invalid_rate_threshold=invalid_rate_threshold,
+        run_mode="backfill" if explicit_window else "scheduled",
+        batch_id_generated=batch_id_generated,
+    )
+
+
+def align_scheduled_window_to_watermark(
+    config: RunConfiguration,
+    current_watermark: datetime | str | None,
+) -> RunConfiguration:
+    """Lấp gap lịch chạy bằng watermark mà không thay đổi backfill chủ động.
+
+    Airflow dùng ``catchup=False`` nên một lần scheduler ngừng có thể bỏ qua
+    nhiều data interval. Với run theo lịch, watermark thành công gần nhất mới
+    là đầu cửa sổ thật; backfill vẫn giữ nguyên cửa sổ do người vận hành chọn.
+    """
+
+    if config.run_mode != "scheduled" or current_watermark is None:
+        return config
+    watermark = parse_utc(current_watermark, "current_watermark")
+    window_end = parse_utc(config.window_end, "window_end")
+    if watermark >= window_end:
+        raise ConfigurationError(
+            "Watermark đã bằng hoặc vượt window_end; không có cửa sổ mới để xử lý"
+        )
+    if window_end - watermark > MAX_BACKFILL_WINDOW:
+        raise ConfigurationError(
+            "Gap từ watermark vượt 31 ngày; phải chia thành các backfill có kiểm soát"
+        )
+    batch_id = config.batch_id
+    if config.batch_id_generated:
+        batch_id = f"week6-{watermark:%Y%m%dT%H%M}-{window_end:%Y%m%dT%H%M}"
+    return replace(
+        config,
+        window_start=watermark.isoformat(),
+        batch_id=batch_id,
     )

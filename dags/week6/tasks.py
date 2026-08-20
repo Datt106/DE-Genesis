@@ -14,13 +14,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from exercises.week5.common import DatabaseConfig
-from exercises.week6.config import resolve_run_configuration
+from exercises.week6.config import (
+    align_scheduled_window_to_watermark,
+    resolve_run_configuration,
+)
 from exercises.week6.ingestion import ingest_incremental_batch
 from exercises.week6.quality import run_curated_quality_gate, run_raw_quality_gate
 from exercises.week6.repository import (
     finalize_success,
+    get_watermark,
     initialize_run,
     mark_failure,
+    publish_curated_snapshot,
 )
 
 
@@ -38,6 +43,10 @@ def resolve_configuration() -> dict:
         default_invalid_rate_threshold=float(
             os.getenv("WEEK6_INVALID_RATE_THRESHOLD", "0")
         ),
+    )
+    config = align_scheduled_window_to_watermark(
+        config,
+        get_watermark(PIPELINE_NAME),
     )
     return config.to_dict()
 
@@ -100,6 +109,10 @@ def run_spark_snapshot() -> None:
 
 def quality_gate_curated() -> dict:
     return run_curated_quality_gate(pull_configuration())
+
+
+def publish_curated() -> dict:
+    return publish_curated_snapshot(pull_configuration())
 
 
 def finish_run() -> None:
