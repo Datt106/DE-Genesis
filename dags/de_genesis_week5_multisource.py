@@ -6,35 +6,36 @@ from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 from airflow.operators.python import PythonOperator
 
-from week5.tasks import check_dependencies, failure_callback, ingest_airflow, run_shared_spark
+from week5.tasks import (
+    check_dependencies,
+    extract_multisource,
+    failure_callback,
+    run_multisource_spark,
+)
 
 
 DEFAULT_ARGS = {
     "owner": "de-genesis",
     "retries": 2,
-    "retry_delay": timedelta(seconds=10),
+    "retry_delay": timedelta(seconds=15),
     "execution_timeout": timedelta(minutes=30),
     "on_failure_callback": failure_callback,
 }
 
 with DAG(
-    dag_id="de_genesis_week5_airflow_ingestion",
-    description="Airflow gọi Promotion API, nạp raw và điều phối Spark core tuần 5",
+    dag_id="de_genesis_week5_multisource",
+    description="CSV + PostgreSQL + REST API qua Spark, lưu báo cáo Parquet",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2026, 7, 1),
-    schedule="0 6 * * *",
+    schedule="30 6 * * *",
     catchup=False,
     max_active_runs=1,
-    tags=["de-genesis", "week5", "airflow-centric"],
+    tags=["de-genesis", "week5", "multisource"],
 ) as dag:
     start = EmptyOperator(task_id="start")
     dependencies = PythonOperator(task_id="check_dependencies", python_callable=check_dependencies)
-    raw = PythonOperator(task_id="extract_and_load_raw", python_callable=ingest_airflow)
-    transform = PythonOperator(
-        task_id="run_shared_spark_transform",
-        python_callable=run_shared_spark,
-        op_kwargs={"source_mode": "airflow"},
-    )
+    extract = PythonOperator(task_id="extract_csv_postgres_rest", python_callable=extract_multisource)
+    transform = PythonOperator(task_id="spark_build_reports", python_callable=run_multisource_spark)
     end = EmptyOperator(task_id="end")
 
-    start >> dependencies >> raw >> transform >> end
+    start >> dependencies >> extract >> transform >> end

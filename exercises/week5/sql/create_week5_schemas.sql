@@ -13,8 +13,7 @@ CREATE TABLE IF NOT EXISTS week5_raw.promotions_airflow (
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     payload_hash TEXT NOT NULL,
     is_valid BOOLEAN NOT NULL,
-    validation_error TEXT,
-    UNIQUE (source_system, promotion_id, payload_hash)
+    validation_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS week5_raw.promotions_nifi (
@@ -28,8 +27,7 @@ CREATE TABLE IF NOT EXISTS week5_raw.promotions_nifi (
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     payload_hash TEXT NOT NULL,
     is_valid BOOLEAN NOT NULL,
-    validation_error TEXT,
-    UNIQUE (source_system, promotion_id, payload_hash)
+    validation_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS week5_control.pipeline_runs (
@@ -43,12 +41,137 @@ CREATE TABLE IF NOT EXISTS week5_control.pipeline_runs (
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     finished_at TIMESTAMPTZ,
     raw_count BIGINT NOT NULL DEFAULT 0,
+    source_count BIGINT NOT NULL DEFAULT 0,
+    inserted_count BIGINT NOT NULL DEFAULT 0,
+    duplicate_count BIGINT NOT NULL DEFAULT 0,
     accepted_count BIGINT NOT NULL DEFAULT 0,
     rejected_count BIGINT NOT NULL DEFAULT 0,
     curated_count BIGINT NOT NULL DEFAULT 0,
     error_message TEXT,
-    UNIQUE (source_mode, batch_id)
+    CONSTRAINT pipeline_runs_source_reconciliation_check
+        CHECK (source_count = inserted_count + duplicate_count),
+    CONSTRAINT pipeline_runs_raw_reconciliation_check
+        CHECK (raw_count = accepted_count + rejected_count)
 );
+
+-- Migration idempotent cho database đã được tạo bởi phiên bản cũ. Raw là nhật ký
+-- bất biến theo batch: cùng payload ở batch mới vẫn phải được lưu; chỉ lần chạy lại
+-- chính batch đó mới bị xem là trùng.
+ALTER TABLE week5_raw.promotions_airflow
+    DROP CONSTRAINT IF EXISTS promotions_airflow_source_system_promotion_id_payload_hash_key;
+ALTER TABLE week5_raw.promotions_nifi
+    DROP CONSTRAINT IF EXISTS promotions_nifi_source_system_promotion_id_payload_hash_key;
+ALTER TABLE week5_raw.promotions_airflow
+    DROP CONSTRAINT IF EXISTS promotions_airflow_batch_id_source_system_promotion_id_payload_hash_key;
+ALTER TABLE week5_raw.promotions_nifi
+    DROP CONSTRAINT IF EXISTS promotions_nifi_batch_id_source_system_promotion_id_payload_hash_key;
+
+-- PostgreSQL mặc định coi NULL khác NULL trong UNIQUE. promotion_id có thể NULL
+-- ở record invalid, nên retry cùng batch sẽ lọt qua unique index kiểu cũ. PostgreSQL
+-- 16 hỗ trợ NULLS NOT DISTINCT: NULL được xem là cùng một giá trị cho conflict key.
+-- Migration chỉ rebuild index khi index hiện tại chưa có semantic này. Trước khi
+-- rebuild, các bản sao chính xác do schema cũ tạo ra được dọn, giữ ingestion_id đầu.
+DO $$
+DECLARE
+    airflow_index REGCLASS;
+    airflow_nulls_not_distinct BOOLEAN := FALSE;
+    nifi_index REGCLASS;
+    nifi_nulls_not_distinct BOOLEAN := FALSE;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('week5_raw_nulls_not_distinct_migration'));
+
+    airflow_index := to_regclass('week5_raw.uq_promotions_airflow_batch_payload');
+    IF airflow_index IS NOT NULL THEN
+        SELECT indnullsnotdistinct
+        INTO airflow_nulls_not_distinct
+        FROM pg_index
+        WHERE indexrelid = airflow_index;
+    END IF;
+    IF airflow_index IS NULL OR NOT airflow_nulls_not_distinct THEN
+        WITH ranked AS (
+            SELECT ingestion_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY batch_id, source_system, promotion_id, payload_hash
+                       ORDER BY ingestion_id
+                   ) AS duplicate_rank
+            FROM week5_raw.promotions_airflow
+        )
+        DELETE FROM week5_raw.promotions_airflow AS target
+        USING ranked
+        WHERE target.ingestion_id = ranked.ingestion_id
+          AND ranked.duplicate_rank > 1;
+        IF airflow_index IS NOT NULL THEN
+            EXECUTE 'DROP INDEX week5_raw.uq_promotions_airflow_batch_payload';
+        END IF;
+        EXECUTE '
+            CREATE UNIQUE INDEX uq_promotions_airflow_batch_payload
+            ON week5_raw.promotions_airflow (
+                batch_id, source_system, promotion_id, payload_hash
+            ) NULLS NOT DISTINCT
+        ';
+    END IF;
+
+    nifi_index := to_regclass('week5_raw.uq_promotions_nifi_batch_payload');
+    IF nifi_index IS NOT NULL THEN
+        SELECT indnullsnotdistinct
+        INTO nifi_nulls_not_distinct
+        FROM pg_index
+        WHERE indexrelid = nifi_index;
+    END IF;
+    IF nifi_index IS NULL OR NOT nifi_nulls_not_distinct THEN
+        WITH ranked AS (
+            SELECT ingestion_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY batch_id, source_system, promotion_id, payload_hash
+                       ORDER BY ingestion_id
+                   ) AS duplicate_rank
+            FROM week5_raw.promotions_nifi
+        )
+        DELETE FROM week5_raw.promotions_nifi AS target
+        USING ranked
+        WHERE target.ingestion_id = ranked.ingestion_id
+          AND ranked.duplicate_rank > 1;
+        IF nifi_index IS NOT NULL THEN
+            EXECUTE 'DROP INDEX week5_raw.uq_promotions_nifi_batch_payload';
+        END IF;
+        EXECUTE '
+            CREATE UNIQUE INDEX uq_promotions_nifi_batch_payload
+            ON week5_raw.promotions_nifi (
+                batch_id, source_system, promotion_id, payload_hash
+            ) NULLS NOT DISTINCT
+        ';
+    END IF;
+END
+$$;
+
+ALTER TABLE week5_control.pipeline_runs
+    ADD COLUMN IF NOT EXISTS source_count BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS inserted_count BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS duplicate_count BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE week5_control.pipeline_runs
+    DROP CONSTRAINT IF EXISTS pipeline_runs_source_mode_batch_id_key;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'pipeline_runs_source_reconciliation_check'
+          AND conrelid = 'week5_control.pipeline_runs'::regclass
+    ) THEN
+        ALTER TABLE week5_control.pipeline_runs
+            ADD CONSTRAINT pipeline_runs_source_reconciliation_check
+            CHECK (source_count = inserted_count + duplicate_count) NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'pipeline_runs_raw_reconciliation_check'
+          AND conrelid = 'week5_control.pipeline_runs'::regclass
+    ) THEN
+        ALTER TABLE week5_control.pipeline_runs
+            ADD CONSTRAINT pipeline_runs_raw_reconciliation_check
+            CHECK (raw_count = accepted_count + rejected_count) NOT VALID;
+    END IF;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS week5_control.ingestion_watermarks (
     pipeline_name TEXT NOT NULL,

@@ -33,8 +33,12 @@ def fetch_all_promotions(
     scenario: str = "success",
     timeout: float = 5,
     max_retries: int = 3,
+    max_pages: int = 100,
     session: requests.Session | None = None,
+    headers: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    if page_size < 1 or max_retries < 1 or max_pages < 1:
+        raise ValueError("page_size, max_retries và max_pages phải lớn hơn hoặc bằng 1")
     client = session or requests.Session()
     records: list[dict[str, Any]] = []
     page = 1
@@ -44,6 +48,7 @@ def fetch_all_promotions(
                 response = client.get(
                     f"{api_url.rstrip('/')}/api/v1/promotions",
                     params={"page": page, "page_size": page_size, "scenario": scenario},
+                    headers=headers,
                     timeout=timeout,
                 )
                 if response.status_code == 429 or response.status_code >= 500:
@@ -59,9 +64,15 @@ def fetch_all_promotions(
         if not isinstance(body, dict) or not isinstance(body.get("data"), list):
             raise ValueError("Response API không đúng contract")
         records.extend(body["data"])
-        pagination = body.get("pagination", {})
+        pagination = body.get("pagination")
+        if not isinstance(pagination, dict) or not isinstance(
+            pagination.get("has_next"), bool
+        ):
+            raise ValueError("Response API thiếu pagination.has_next kiểu boolean")
         if not pagination.get("has_next", False):
             return records
+        if page >= max_pages:
+            raise ValueError(f"API vượt quá giới hạn phân trang: {max_pages}")
         page += 1
 
 
@@ -79,7 +90,8 @@ def ingest_airflow_batch(
         page_size=page_size or int(os.getenv("WEEK5_API_PAGE_SIZE", "100")),
         scenario=scenario,
     )
-    raw_count = accepted = rejected = 0
+    source_count = len(records)
+    inserted_count = 0
     with database.connect() as connection:
         ensure_schema(connection)
         with connection.cursor() as cursor:
@@ -88,8 +100,11 @@ def ingest_airflow_batch(
                 INSERT INTO week5_control.pipeline_runs(
                     run_id, pipeline_name, source_mode, batch_id, status
                 ) VALUES (%s, %s, 'airflow', %s, 'running')
-                ON CONFLICT (source_mode, batch_id) DO UPDATE
-                SET run_id = EXCLUDED.run_id, status = 'running',
+                ON CONFLICT (run_id) DO UPDATE
+                SET pipeline_name = EXCLUDED.pipeline_name,
+                    source_mode = EXCLUDED.source_mode,
+                    batch_id = EXCLUDED.batch_id,
+                    status = 'running',
                     started_at = NOW(), finished_at = NULL, error_message = NULL
                 """,
                 (run_id, "de_genesis_week5_airflow_ingestion", batch_id),
@@ -97,16 +112,15 @@ def ingest_airflow_batch(
             for payload in records:
                 errors = validate_promotion(payload)
                 is_valid = not errors
-                raw_count += 1
-                accepted += int(is_valid)
-                rejected += int(not is_valid)
                 cursor.execute(
                     """
                     INSERT INTO week5_raw.promotions_airflow(
                         batch_id, source_system, promotion_id, product_id, payload,
                         source_updated_at, payload_hash, is_valid, validation_error
                     ) VALUES (%s, 'airflow', %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (source_system, promotion_id, payload_hash) DO NOTHING
+                    ON CONFLICT (
+                        batch_id, source_system, promotion_id, payload_hash
+                    ) DO NOTHING
                     """,
                     (
                         batch_id,
@@ -119,16 +133,45 @@ def ingest_airflow_batch(
                         "; ".join(errors) or None,
                     ),
                 )
+                inserted_count += cursor.rowcount
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE is_valid),
+                       COUNT(*) FILTER (WHERE NOT is_valid)
+                FROM week5_raw.promotions_airflow
+                WHERE batch_id = %s
+                """,
+                (batch_id,),
+            )
+            raw_count, accepted, rejected = cursor.fetchone()
+            duplicate_count = source_count - inserted_count
             cursor.execute(
                 """
                 UPDATE week5_control.pipeline_runs
-                SET status = 'raw_ready', raw_count = %s,
-                    accepted_count = %s, rejected_count = %s
+                SET status = 'raw_ready', source_count = %s,
+                    inserted_count = %s, duplicate_count = %s,
+                    raw_count = %s, accepted_count = %s, rejected_count = %s
                 WHERE run_id = %s
                 """,
-                (raw_count, accepted, rejected, run_id),
+                (
+                    source_count,
+                    inserted_count,
+                    duplicate_count,
+                    raw_count,
+                    accepted,
+                    rejected,
+                    run_id,
+                ),
             )
-    return {"raw_count": raw_count, "accepted_count": accepted, "rejected_count": rejected}
+    return {
+        "source_count": source_count,
+        "inserted_count": inserted_count,
+        "duplicate_count": duplicate_count,
+        "raw_count": raw_count,
+        "accepted_count": accepted,
+        "rejected_count": rejected,
+    }
 
 
 def mark_failure(run_id: str, error_message: str) -> None:

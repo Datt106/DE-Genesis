@@ -1,0 +1,13 @@
+{
+  "role": "runtime-export",
+  "snapshotVersion": "v2",
+  "canonicalBlueprint": "flow_definition.json",
+  "configurator": "../scripts/configure_nifi_flow.py",
+  "doNotImport": false,
+  "validatedWith": "Apache NiFi 1.27.0",
+  "validatedAt": "2026-08-14",
+  "processorCount": 21,
+  "connectionCount": 46,
+  "controllerServiceCount": 2,
+  "warning": "Snapshot không chứa giá trị sensitive; phải nạp lại airflow.password và postgres.password sau khi import. Blueprint v2 và configurator vẫn là nguồn chỉnh sửa chuẩn."
+}

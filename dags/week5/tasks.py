@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from exercises.week5.common import DatabaseConfig  # noqa: E402
 from exercises.week5.ingestion import ensure_schema, ingest_airflow_batch, mark_failure  # noqa: E402
+from exercises.week5.multisource import extract_multisource_batch  # noqa: E402
 
 
 def context_ids(source_mode: str) -> tuple[str, str]:
@@ -64,14 +65,25 @@ def prepare_nifi_run() -> dict:
             raw_count, accepted_count, rejected_count = cursor.fetchone()
             if raw_count == 0:
                 raise AirflowFailException(f"Batch NiFi chưa có dữ liệu: {batch_id}")
+            source_count = int(conf.get("source_count", raw_count))
+            if source_count < raw_count:
+                raise AirflowFailException("source_count không được nhỏ hơn số dòng raw")
             cursor.execute(
                 """
                 INSERT INTO week5_control.pipeline_runs(
                     run_id,pipeline_name,source_mode,batch_id,status,
+                    source_count,inserted_count,duplicate_count,
                     raw_count,accepted_count,rejected_count
-                ) VALUES (%s,%s,'nifi',%s,'raw_ready',%s,%s,%s)
-                ON CONFLICT (source_mode,batch_id) DO UPDATE
-                SET status='raw_ready', raw_count=EXCLUDED.raw_count,
+                ) VALUES (%s,%s,'nifi',%s,'raw_ready',%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (run_id) DO UPDATE
+                SET pipeline_name=EXCLUDED.pipeline_name,
+                    source_mode=EXCLUDED.source_mode,
+                    batch_id=EXCLUDED.batch_id,
+                    status='raw_ready',
+                    source_count=EXCLUDED.source_count,
+                    inserted_count=EXCLUDED.inserted_count,
+                    duplicate_count=EXCLUDED.duplicate_count,
+                    raw_count=EXCLUDED.raw_count,
                     accepted_count=EXCLUDED.accepted_count,
                     rejected_count=EXCLUDED.rejected_count,
                     started_at=NOW(), finished_at=NULL, error_message=NULL
@@ -80,12 +92,22 @@ def prepare_nifi_run() -> dict:
                     run_id,
                     "de_genesis_week5_nifi_downstream",
                     batch_id,
+                    source_count,
+                    raw_count,
+                    source_count - raw_count,
                     raw_count,
                     accepted_count,
                     rejected_count,
                 ),
             )
-    return {"raw_count": raw_count, "accepted_count": accepted_count, "rejected_count": rejected_count}
+    return {
+        "source_count": source_count,
+        "inserted_count": raw_count,
+        "duplicate_count": source_count - raw_count,
+        "raw_count": raw_count,
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+    }
 
 
 def run_shared_spark(source_mode: str) -> None:
@@ -103,6 +125,31 @@ def run_shared_spark(source_mode: str) -> None:
         source_mode,
         "--summary-path",
         summary,
+    ]
+    subprocess.run(command, check=True, env=os.environ.copy(), cwd="/workspace")
+
+
+def extract_multisource() -> str:
+    _, batch_id = context_ids("multisource")
+    manifest = extract_multisource_batch(
+        batch_id=batch_id,
+        output_root="/workspace/output/week5/multisource",
+        csv_path="/workspace/data/sample/sales.csv",
+    )
+    return str(manifest)
+
+
+def run_multisource_spark() -> None:
+    _, batch_id = context_ids("multisource")
+    manifest = f"/workspace/output/week5/multisource/{batch_id}/manifest.json"
+    command = [
+        sys.executable,
+        "-m",
+        "exercises.week5.spark.multisource_report",
+        "--manifest",
+        manifest,
+        "--output-root",
+        "/workspace/output/week5/multisource",
     ]
     subprocess.run(command, check=True, env=os.environ.copy(), cwd="/workspace")
 

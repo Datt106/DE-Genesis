@@ -234,7 +234,11 @@ def main() -> int:
     database = DatabaseConfig.from_env()
     spark = (
         SparkSession.builder.appName(f"week5-{args.source_mode}-{args.batch_id}")
-        .master(os.getenv("WEEK5_SPARK_MASTER", "local[2]"))
+        .master(
+            os.getenv("WEEK5_SPARK_MASTER")
+            or os.getenv("SPARK_MASTER_URL")
+            or "local[2]"
+        )
         .getOrCreate()
     )
     try:

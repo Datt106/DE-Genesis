@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:promo="urn:de-genesis:promotions:v1">
+  <soap:Body>
+    <promo:ListPromotionsResponse>
+      <promo:promotions>
+        <promo:promotion>
+          <promo:promotion_id>SOAP-001</promo:promotion_id>
+          <promo:product_id>PRODUCT-001</promo:product_id>
+          <promo:discount_type>percentage</promo:discount_type>
+          <promo:discount_value>10</promo:discount_value>
+          <promo:starts_at>2017-01-01T00:00:00Z</promo:starts_at>
+          <promo:ends_at>2017-12-31T23:59:59Z</promo:ends_at>
+          <promo:version>1</promo:version>
+        </promo:promotion>
+      </promo:promotions>
+    </promo:ListPromotionsResponse>
+  </soap:Body>
+</soap:Envelope>

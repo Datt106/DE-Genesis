@@ -61,3 +61,14 @@ def test_rejects_contract_violation() -> None:
     session = FakeSession([FakeResponse(200, {"data": "not-a-list"})])
     with pytest.raises(ValueError, match="contract"):
         fetch_all_promotions("http://mock", session=session)
+
+
+def test_stops_unbounded_pagination() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(200, page([], 1, True)),
+            FakeResponse(200, page([], 2, True)),
+        ]
+    )
+    with pytest.raises(ValueError, match="giới hạn phân trang"):
+        fetch_all_promotions("http://mock", session=session, max_pages=2)

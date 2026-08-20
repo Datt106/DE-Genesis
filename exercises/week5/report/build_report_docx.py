@@ -118,7 +118,7 @@ def add_cover(document: Document) -> None:
         ("Dự án", "DE Genesis - Lộ trình thực hành Data Engineering"),
         ("Phạm vi", "Hai pipeline orchestration và API integration"),
         ("Công nghệ", "FastAPI, PostgreSQL, Airflow 2.9.3, NiFi 1.27.0, Spark 3.5.1"),
-        ("Ngày báo cáo", "24/07/2026"),
+        ("Ngày đồng bộ", "14/08/2026"),
     ]
     for label, value in metadata:
         p = document.add_paragraph()
