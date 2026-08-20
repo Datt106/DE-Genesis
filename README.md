@@ -2,6 +2,9 @@
 
 Repo này dựng một môi trường Docker để thực hành roadmap 6 tuần: Python/Java/SQL, PostgreSQL/MySQL, Spark, HDFS, Kafka, Airflow, NiFi, Prometheus và Grafana. Các service nặng được tách theo profile để bạn chỉ bật đúng phần đang học.
 
+Ma trận đối chiếu từng yêu cầu, bằng chứng triển khai và giới hạn còn lại nằm
+tại [`ROADMAP_COMPLIANCE.md`](ROADMAP_COMPLIANCE.md).
+
 ## Yêu cầu
 
 - Docker Desktop đã bật.
@@ -13,6 +16,23 @@ Kiểm tra nhanh:
 ```powershell
 .\scripts\check-env.ps1
 ```
+
+Kiểm tra cấu hình Compose, Python, Prometheus và toàn bộ test roadmap bằng một
+lệnh:
+
+```powershell
+.\scripts\verify-roadmap.ps1
+```
+
+## Chuẩn bị dữ liệu Olist
+
+Bộ dữ liệu Olist không được lưu trong Git. Tải và giải nén bộ **Brazilian E-Commerce Public Dataset by Olist** vào `data/olist`, sau đó kiểm tra đủ chín file nguồn:
+
+```powershell
+.\scripts\check-olist-data.ps1
+```
+
+Danh sách tên file chính xác nằm trong [`data/olist/README.md`](data/olist/README.md). Các bài Kafka/Spark Streaming và pipeline log Tuần 6 có thể chạy độc lập khi chưa có Olist; Mock Promotion API sẽ dùng bộ 250 sản phẩm xác định trước.
 
 ## Khởi động
 
@@ -608,32 +628,63 @@ Khởi động thêm Kafka:
 .\scripts\start.ps1 -Target week4 -Build
 ```
 
-Tạo topic:
+Topic `service-logs` được `kafka-init` tạo tự động. Có thể dùng lệnh sau để
+kiểm tra hoặc tạo lại theo cơ chế idempotent:
 
 ```powershell
-docker compose exec kafka kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic service-logs --partitions 1 --replication-factor 1
+docker compose exec kafka kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic service-logs --partitions 3 --replication-factor 1
 ```
 
-Mở terminal thứ nhất để gửi log mẫu:
+Mở terminal thứ nhất để gửi log mẫu. Mặc định producer chạy liên tục; dùng
+`--count` và `--seed` khi cần một lần chạy hữu hạn, có thể tái lập:
 
 ```powershell
 docker compose exec workspace python exercises/week4/kafka_producer.py
+docker compose exec workspace python exercises/week4/kafka_producer.py --count 20 --interval 0.2 --seed 42
 ```
 
 Mở terminal thứ hai để chạy streaming job:
 
 ```powershell
-docker compose exec spark-master spark-submit --master spark://spark-master:7077 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 /workspace/exercises/week4/spark_streaming_kafka.py
+docker compose exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.jars.ivy=/tmp/.ivy2 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 /workspace/exercises/week4/spark_streaming_kafka.py
 ```
 
-Kết quả streaming ghi vào `output/week4`.
+`spark.jars.ivy=/tmp/.ivy2` đặt cache dependency vào thư mục ghi được trong
+container Spark. Job đọc JSON từ Kafka, kiểm tra schema, dùng event time cùng
+watermark rồi tổng hợp theo cửa sổ thời gian, service và status code. Bản ghi
+không hợp lệ được đưa vào Parquet quarantine kèm payload, lý do và Kafka
+offset; metric accepted/rejected được ghi idempotent theo micro-batch. Kết quả
+báo cáo, quarantine, metric và checkpoint dùng các đường dẫn riêng để không
+ghi đè lẫn nhau. `failOnDataLoss=true` là mặc định; chỉ bật
+`--allow-data-loss` khi chủ động chấp nhận mất offset trong lab.
+
+Để xử lý hết dữ liệu đang có rồi tự kết thúc, thêm `--available-now`. Tham số
+`--starting-offsets earliest` chỉ có tác dụng khi checkpoint chưa tồn tại:
+
+```powershell
+docker compose exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf spark.jars.ivy=/tmp/.ivy2 --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 /workspace/exercises/week4/spark_streaming_kafka.py --starting-offsets earliest --available-now
+```
+
+Vì sink dùng `append` và watermark, cửa sổ mới nhất chỉ được ghi khi event
+time đã tiến đủ xa để đóng cửa sổ. Không dùng chung một checkpoint cho hai
+topic hoặc hai cấu hình cửa sổ khác nhau. Chạy kiểm thử logic producer, parse
+JSON, lọc dữ liệu và tổng hợp bằng:
+
+```powershell
+docker compose exec workspace pytest -q exercises/week4/tests
+```
+
+Báo cáo tổng hợp tuần 3-4, file Markdown nguồn và script tái tạo DOCX nằm tại
+`exercises/week4/report`.
 
 ## Tuần 5: Airflow, NiFi và tích hợp API
 
-Tuần 5 xây hai pipeline tương đương trên cùng Promotion API mô phỏng:
+Tuần 5 xây ba pipeline trên cùng môi trường tích hợp:
 
-- Airflow gọi API, ghi raw và điều phối Spark.
-- NiFi gọi API, ghi raw rồi kích hoạt Airflow qua REST API.
+- Airflow gọi REST API, ghi raw và điều phối Spark, lịch `0 6 * * *`.
+- NiFi phân trang đủ nguồn REST, ghi raw rồi kích hoạt Airflow qua REST API.
+- Airflow hợp nhất CSV + PostgreSQL + REST API, Spark tạo data mart Parquet,
+  lịch `30 6 * * *`.
 
 Khởi động toàn bộ workflow:
 
@@ -652,18 +703,34 @@ Mock API ở <http://localhost:8000/docs>. Mở Airflow tại
 
 - `de_genesis_week5_airflow_ingestion`
 - `de_genesis_week5_nifi_downstream`
+- `de_genesis_week5_multisource`
 
 Mở NiFi tại <https://localhost:8443/nifi> và làm theo
 `exercises/week5/nifi/huong_dan_import_flow.md`. Trình duyệt có thể cảnh báo
 chứng chỉ tự ký; chỉ tiếp tục trong môi trường local. Hướng dẫn chi tiết, cách
-chạy test và truy vấn đối soát nằm tại `exercises/week5/README.md`.
+chạy test, hợp đồng API key/OAuth2/SOAP và truy vấn đối soát nằm tại
+`exercises/week5/README.md`. Blueprint JSON v2 cùng configurator là nguồn chuẩn.
+Native flow v2 đã được xuất và xác thực trên NiFi 1.27.0; sau khi
+import phải nạp lại hai sensitive parameter vì artifact không lưu secret.
 
-## Tuần 6: Production pipeline, monitoring và alerting
+## Tuần 6: Hệ thống xử lý service log production-like
 
-Tuần 6 nâng pipeline Promotion thành DAG production chạy hằng ngày, có cửa sổ
-incremental, backfill thủ công, audit, retry, hai data-quality gate và
-watermark an toàn. Prometheus thu metrics từ pipeline, dependency và Spark;
-Grafana được provision sẵn data source cùng dashboard.
+Pipeline chính của Tuần 6 bám đúng dự án log trong roadmap:
+
+- service log được đẩy vào Kafka `week6-service-logs`;
+- Spark Structured Streaming chạy micro-batch mặc định 30 giây và từ chối cấu
+  hình vượt SLA 60 giây;
+- raw Parquet trên HDFS được phân vùng theo `ingest_date/ingest_hour/rotation_5m`
+  rồi `stream_batch_id`, nên retry không nhân đôi epoch;
+- report số request/phút và phân bố HTTP status được lưu ở HDFS lẫn PostgreSQL;
+- Airflow chạy report cửa sổ đóng mỗi 5 phút, có health gate, DQ gate và
+  backfill tối đa 7 ngày mỗi run;
+- Prometheus/Grafana theo dõi heartbeat, batch lỗi, bản ghi lỗi, report lỗi và
+  độ trễ event-to-HDFS; alert SLA bật khi độ trễ vượt 60 giây.
+
+Pipeline Promotion hằng ngày vẫn được giữ như phần mở rộng. Nó đã dùng
+`staging → quality gate → atomic publish`, Spark JDBC phân tán và watermark lấp
+gap, nên dữ liệu lỗi không còn được publish trước khi DQ hoàn tất.
 
 Khởi động đầy đủ:
 
@@ -674,10 +741,28 @@ Khởi động đầy đủ:
 Mở Airflow tại <http://localhost:8088> và bật DAG:
 
 ```text
+de_genesis_week6_log_report
 de_genesis_week6_production_pipeline
 ```
 
-Để chạy batch mẫu có dữ liệu, trigger với:
+Producer và streaming service được Compose khởi động cùng profile monitoring.
+Có thể kiểm tra tiến trình và raw HDFS bằng:
+
+```powershell
+docker compose ps week6-log-producer week6-log-streaming
+docker compose exec namenode hdfs dfs -ls -R /data/week6/raw/service-logs
+```
+
+Để backfill report log, trigger `de_genesis_week6_log_report` với:
+
+```json
+{
+  "window_start": "2026-08-13T00:00:00Z",
+  "window_end": "2026-08-14T00:00:00Z"
+}
+```
+
+Để chạy batch Promotion mở rộng, trigger với:
 
 ```json
 {
@@ -692,7 +777,8 @@ Prometheus ở <http://localhost:9090>, trang alert ở
 <http://localhost:9090/alerts>, Grafana ở <http://localhost:3000> và metrics
 exporter ở <http://localhost:9108/metrics>. Dashboard
 `DE Genesis - Pipeline Production` được tạo tự động. Hướng dẫn backfill,
-quality gate, truy vấn audit và kiểm thử nằm tại `exercises/week6/README.md`.
+raw rotation 5 phút, quality gate, truy vấn audit và kiểm thử nằm tại
+`exercises/week6/README.md`.
 
 ## Cấu trúc thư mục
 
@@ -701,10 +787,14 @@ data/sample/             Dữ liệu mẫu CSV và log JSONL
 exercises/week1/         Python + SQL cơ bản
 exercises/week2/         Script chuyển dữ liệu Olist sang OLTP và OLAP
 exercises/week3/         Spark batch 1 GiB+, benchmark định dạng và kiểm thử
-exercises/week4/         Kafka producer và Spark streaming
-exercises/week6/         Spark log report
-dags/                    DAG mẫu cho Airflow
-config/prometheus/       Cấu hình scrape cho Prometheus
+exercises/week4/         Kafka producer, Spark streaming, kiểm thử và báo cáo
+exercises/week5/         Airflow, NiFi, Promotion API, Spark core và báo cáo
+exercises/week6/         Production pipeline, monitoring, alert rules và báo cáo
+mock_api/                FastAPI mô phỏng Promotion API
+dags/                    DAG Airflow tuần 5 và tuần 6
+config/prometheus/       Cấu hình scrape và alert rules
+config/grafana/          Data source và dashboard được provision
+config/spark/            Prometheus metrics sink cho Spark
 scripts/                 Script PowerShell để bật/tắt môi trường
 ```
 
