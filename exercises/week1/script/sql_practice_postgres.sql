@@ -169,3 +169,109 @@ FROM orders
 WHERE order_purchase_timestamp >= TIMESTAMP '2018-01-01'
   AND order_purchase_timestamp < TIMESTAMP '2018-02-01'
 ORDER BY order_purchase_timestamp;
+
+-- 11. Stored procedure: làm mới bảng tổng hợp độc lập với bảng nghiệp vụ.
+-- Bảng lab có thể tạo lại và không thay đổi dữ liệu Olist nguồn.
+CREATE TABLE IF NOT EXISTS olist_practice.week1_order_status_metrics (
+    order_status text PRIMARY KEY,
+    total_orders bigint NOT NULL,
+    refreshed_at timestamptz NOT NULL
+);
+
+CREATE OR REPLACE PROCEDURE olist_practice.refresh_week1_order_status_metrics()
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    TRUNCATE TABLE olist_practice.week1_order_status_metrics;
+
+    INSERT INTO olist_practice.week1_order_status_metrics (
+        order_status,
+        total_orders,
+        refreshed_at
+    )
+    SELECT
+        order_status,
+        COUNT(*) AS total_orders,
+        CURRENT_TIMESTAMP
+    FROM olist_practice.orders
+    GROUP BY order_status;
+END;
+$$;
+
+CALL olist_practice.refresh_week1_order_status_metrics();
+
+SELECT
+    order_status,
+    total_orders,
+    refreshed_at
+FROM olist_practice.week1_order_status_metrics
+ORDER BY total_orders DESC, order_status;
+
+-- 12. Trigger: ghi vết thay đổi trạng thái trên bảng lab, không sửa bảng orders.
+CREATE TABLE IF NOT EXISTS olist_practice.week1_order_status_lab (
+    order_id text PRIMARY KEY,
+    order_status text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS olist_practice.week1_order_status_audit (
+    audit_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id text NOT NULL,
+    old_status text NOT NULL,
+    new_status text NOT NULL,
+    changed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE OR REPLACE FUNCTION olist_practice.audit_week1_order_status_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NEW.order_status IS DISTINCT FROM OLD.order_status THEN
+        NEW.updated_at := CURRENT_TIMESTAMP;
+        INSERT INTO olist_practice.week1_order_status_audit (
+            order_id,
+            old_status,
+            new_status
+        )
+        VALUES (
+            OLD.order_id,
+            OLD.order_status,
+            NEW.order_status
+        );
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_week1_order_status_audit
+ON olist_practice.week1_order_status_lab;
+
+CREATE TRIGGER trg_week1_order_status_audit
+BEFORE UPDATE OF order_status ON olist_practice.week1_order_status_lab
+FOR EACH ROW
+EXECUTE FUNCTION olist_practice.audit_week1_order_status_change();
+
+-- Dữ liệu thử được cô lập trong transaction và rollback sau khi kiểm chứng.
+BEGIN;
+
+INSERT INTO olist_practice.week1_order_status_lab (order_id, order_status)
+VALUES ('week1-demo-order', 'created')
+ON CONFLICT (order_id) DO UPDATE
+SET order_status = EXCLUDED.order_status;
+
+UPDATE olist_practice.week1_order_status_lab
+SET order_status = 'approved'
+WHERE order_id = 'week1-demo-order';
+
+SELECT
+    order_id,
+    old_status,
+    new_status,
+    changed_at
+FROM olist_practice.week1_order_status_audit
+WHERE order_id = 'week1-demo-order'
+ORDER BY audit_id DESC
+LIMIT 1;
+
+ROLLBACK;

@@ -1,4 +1,4 @@
-# Báo cáo tuần 1 - Python, Java, SQL, Linux và PostgreSQL
+# Báo cáo tuần 1 - Python, Java, SQL, Linux, PostgreSQL và MySQL
 
 ## 1. Mục tiêu
 
@@ -8,7 +8,8 @@ Tuần 1 tập trung vào kỹ năng nền tảng của Data Engineering:
 - Luyện Java cơ bản qua xử lý file CSV, class, object, collections và exception.
 - Viết SQL phân tích dữ liệu với SELECT, JOIN, GROUP BY, HAVING, subquery, window function.
 - Làm quen Linux command line trong container.
-- Tạo bảng, constraint, foreign key, index và xem execution plan trong PostgreSQL.
+- Tạo bảng, constraint, foreign key, index, stored procedure, trigger và xem execution plan.
+- Đối chiếu các thao tác cốt lõi giữa PostgreSQL 16 và MySQL 8.0 trong lab tách biệt.
 
 Dataset dùng để luyện tập là **Brazilian E-Commerce Public Dataset by Olist** đặt tại `data/olist`.
 
@@ -18,6 +19,7 @@ Dataset dùng để luyện tập là **Brazilian E-Commerce Public Dataset by O
 exercises/week1/script/
   import_olist_to_postgres.py     Script Python import toàn bộ Olist vào PostgreSQL
   sql_practice_postgres.sql       Truy vấn SQL phân tích và tối ưu
+  sql_practice_mysql.sql          Lab MySQL về DDL, procedure, trigger và EXPLAIN
   linux_basics.sh                 Script luyện Linux command line
   OlistCsvJavaPractice.java       Code Java đọc CSV và thống kê customer
 
@@ -44,6 +46,16 @@ Chạy SQL luyện tập:
 ```powershell
 docker compose exec workspace psql -h postgres -U de_user -d de_roadmap -f exercises/week1/script/sql_practice_postgres.sql
 ```
+
+Chạy lab MySQL 8.0 từ PowerShell:
+
+```powershell
+Get-Content -Raw exercises/week1/script/sql_practice_mysql.sql |
+  docker compose exec -T mysql mysql -ude_user -pde_password de_roadmap
+```
+
+Lab MySQL chỉ tạo các bảng có tiền tố `week1_`; pipeline Olist chính vẫn dùng
+PostgreSQL để các tuần sau dùng chung một nguồn dữ liệu nhất quán.
 
 Chạy script Linux:
 
@@ -73,6 +85,19 @@ Sau khi kết nối, mở:
 ```text
 de_roadmap -> Schemas -> olist_practice -> Tables
 ```
+
+Kết nối MySQL cho lab đối chiếu:
+
+```text
+Host: localhost
+Port: 3306
+Database: de_roadmap
+Username: de_user
+Password: de_password
+```
+
+Trong DBeaver, chọn driver MySQL 8 và mở các bảng có tiền tố `week1_` trong
+database `de_roadmap`.
 
 ## 4. Kết quả import dữ liệu
 
@@ -114,6 +139,8 @@ File `sql_practice_postgres.sql` bao gồm:
 - Subquery và CTE để tìm bang có doanh thu cao hơn trung bình.
 - Window function `RANK()` để tìm top category theo từng năm.
 - `EXPLAIN ANALYZE` để xem execution plan.
+- Stored procedure làm mới bảng metric theo trạng thái đơn hàng.
+- Trigger ghi audit khi trạng thái trên bảng lab thay đổi.
 
 Ví dụ truy vấn doanh thu theo bang:
 
@@ -145,13 +172,30 @@ Các index quan trọng đã tạo:
 
 Index giúp các truy vấn lọc theo thời gian, join theo khóa ngoại và phân tích theo product/seller chạy ổn định hơn. Với PostgreSQL, cần dùng `EXPLAIN ANALYZE` để kiểm tra thực tế query planner có dùng index hay không.
 
-## 7. Kết luận
+## 7. PostgreSQL và MySQL trong phạm vi tuần 1
+
+Hai hệ quản trị được dùng với mục đích rõ ràng:
+
+| Nội dung | PostgreSQL 16 | MySQL 8.0 |
+| --- | --- | --- |
+| Vai trò | Database chính chứa Olist và làm nguồn cho tuần 2 | Lab đối chiếu dialect, không nhân đôi toàn bộ Olist |
+| Upsert | `ON CONFLICT ... DO UPDATE` | `ON DUPLICATE KEY UPDATE` |
+| Stored procedure | `CREATE OR REPLACE PROCEDURE` và `CALL` | `CREATE PROCEDURE`, `DELIMITER` và `CALL` |
+| Trigger | Hàm trigger PL/pgSQL + `EXECUTE FUNCTION` | Khối `BEGIN ... END` trực tiếp trong trigger |
+| Execution plan | `EXPLAIN ANALYZE` | `EXPLAIN` |
+
+Các bảng trigger/audit đều có tiền tố `week1_`. Phần cập nhật thử nằm trong
+transaction có `ROLLBACK`, vì vậy không thay đổi bảng nghiệp vụ Olist. Stored
+procedure PostgreSQL chỉ làm mới bảng tổng hợp riêng của lab.
+
+## 8. Kết luận
 
 Tuần 1 đã hoàn thành các phần nền tảng:
 
 - Có script Python xử lý dữ liệu CSV lớn và đưa vào PostgreSQL.
 - Có schema dữ liệu thực tế để luyện SQL trong DBeaver.
 - Có truy vấn phân tích dữ liệu từ cơ bản đến nâng cao.
+- Có lab procedure/trigger và execution plan chạy lại được trên cả PostgreSQL và MySQL.
 - Có ví dụ Java để luyện OOP, collections, exception và file I/O.
 - Có script Linux để luyện command line trong container.
 

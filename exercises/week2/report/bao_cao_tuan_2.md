@@ -23,6 +23,7 @@ Kết quả chính của tuần 2 gồm:
 - Đối soát đầy đủ số dòng giữa nguồn và đích.
 - Kiểm tra thành công tính idempotent và cơ chế sinh phiên bản SCD Type 2.
 - Không phát sinh khóa `UNKNOWN` ngoài dự kiến trong các dimension bắt buộc.
+- Phân biệt ETL/ELT, CAP và ACID/BASE bằng quyết định đã triển khai thay vì chỉ nêu định nghĩa.
 
 Kết quả phân tích nhanh từ kho dữ liệu cho thấy 98.666 đơn có dòng sản phẩm, 112.650 dòng bán hàng, tổng giá trị hàng và vận chuyển đạt 15.843.553,24; thời gian giao hàng trung bình là 12,56 ngày; tỷ lệ giao đúng hạn đạt 91,89%; điểm đánh giá trung bình đạt 4,09/5.
 
@@ -64,6 +65,7 @@ Vì vậy, tuần 2 triển khai một luồng hoàn chỉnh: dữ liệu Olist 
 8. Cài đặt SCD Type 2 cho các thuộc tính cần lưu lịch sử.
 9. Tạo bốn fact có grain khác nhau mà không gây nhân bản doanh thu.
 10. Chạy thật trên PostgreSQL và xác minh kết quả.
+11. Giải thích ETL so với ELT, CAP và ACID so với BASE trong đúng phạm vi hệ thống local.
 
 ## 1.3. Sản phẩm bàn giao
 
@@ -138,6 +140,49 @@ Schema `olist_oltp` tối ưu cho tính toàn vẹn nghiệp vụ. Dữ liệu �
 ## 3.3. Tầng OLAP
 
 Schema `olist_olap` tối ưu cho phân tích. Các dimension chứa thuộc tính mô tả; fact chứa foreign key và measure đúng grain. Nhiều fact dùng chung các conformed dimensions để tạo kiến trúc Bus.
+
+## 3.4. ETL và ELT trong implementation
+
+Hai cách tiếp cận đều xuất hiện, nhưng ở các ranh giới khác nhau:
+
+| Luồng | Phân loại | Bằng chứng trong mã nguồn | Lý do chọn |
+| --- | --- | --- | --- |
+| CSV Olist → `olist_practice` | ETL | Python/pandas đọc CSV, chuẩn hóa chuỗi, kiểu ngày/số rồi mới `to_sql` | File nguồn cần được làm sạch trước khi có constraint và kiểu dữ liệu database |
+| `olist_practice` → `olist_oltp` | ELT trong PostgreSQL | `INSERT INTO ... SELECT`, CTE và window function chạy trong database | Nguồn và đích cùng PostgreSQL; push-down tránh kéo toàn bộ dữ liệu qua Python |
+| `olist_oltp` → `olist_olap` | ELT trong PostgreSQL | Dimension/fact được nạp bằng SQL set-based trong một transaction | Join, ánh xạ surrogate key và đối soát tận dụng query planner của PostgreSQL |
+
+ETL không mặc định tốt hơn ELT hoặc ngược lại. Điểm quyết định là vị trí dữ
+liệu, năng lực của compute engine, yêu cầu kiểm soát schema và chi phí di chuyển
+dữ liệu. Với repo này, Python xử lý biên file; PostgreSQL xử lý các phép biến đổi
+quan hệ sau khi dữ liệu đã vào hệ quản trị.
+
+## 3.5. CAP và phạm vi áp dụng
+
+Định lý CAP chỉ buộc một hệ thống dữ liệu phân tán chọn giữa **Consistency** và
+**Availability** khi đang có **network Partition**. PostgreSQL của tuần 2 là một
+instance đơn trong Docker Compose, nên bài lab không thể tuyên bố đã kiểm chứng
+CAP bằng failover hoặc chia cắt mạng.
+
+Nếu mở rộng PostgreSQL thành cụm đồng bộ, quyết định phù hợp với dữ liệu giao
+dịch là ưu tiên consistency: khi primary hoặc quorum không sẵn sàng, từ chối ghi
+thay vì nhận hai phiên bản đơn hàng xung đột. Availability có thể tăng cho truy
+vấn phân tích bằng read replica, nhưng replica trễ phải công bố rõ độ trễ dữ liệu.
+Đây là quyết định thiết kế dự kiến, không phải bằng chứng HA của môi trường local.
+
+## 3.6. ACID và BASE gắn với hệ thống
+
+Pipeline tuần 2 chọn ACID cho vùng dữ liệu chuẩn hóa và kho dữ liệu:
+
+- **Atomicity:** DDL/nạp/đối soát nằm trong transaction; lỗi làm rollback cả lần nạp.
+- **Consistency:** primary key, foreign key, check constraint và grain giữ invariant.
+- **Isolation:** transaction không công bố fact/dimension đang nạp dở cho phiên khác.
+- **Durability:** sau commit, PostgreSQL WAL bảo vệ thay đổi theo cấu hình database.
+
+BASE phù hợp hơn với các thành phần phân tán chấp nhận hội tụ dần, ví dụ cache,
+search index hoặc aggregate streaming ở các tuần sau. Repo tuần 2 chưa triển khai
+một datastore BASE, vì vậy không gắn nhãn BASE cho PostgreSQL chỉ vì OLAP được làm
+mới theo batch. Giữa hai batch, người đọc thấy snapshot đã commit gần nhất; lần
+nạp tiếp theo hoặc thành công toàn bộ, hoặc rollback toàn bộ.
 
 # 4. THIẾT KẾ MÔ HÌNH OLTP
 
@@ -914,3 +959,8 @@ ORDER BY version_number;
 | Degenerate dimension | Mã giao dịch nằm trực tiếp trong fact |
 | Accumulating snapshot | Fact một dòng cho entity và cập nhật theo các mốc vòng đời |
 | Idempotent | Chạy lặp không tạo bản ghi trùng hoặc làm sai kết quả |
+| ETL | Trích xuất, biến đổi rồi mới nạp vào hệ thống đích |
+| ELT | Trích xuất, nạp trước rồi biến đổi bằng compute engine của hệ thống đích |
+| CAP | Ràng buộc giữa consistency và availability khi hệ phân tán gặp network partition |
+| ACID | Atomicity, Consistency, Isolation, Durability cho transaction |
+| BASE | Basically Available, Soft state, Eventual consistency |
