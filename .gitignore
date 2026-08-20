@@ -16,3 +16,5 @@ data/olist/*
 !data/olist/README.md
 ~$*.docx
 ~WRL*.tmp
+*.docx
+!BAO_CAO_CONG_VIEC_6_TUAN_DATA_ENGINEERING.docx

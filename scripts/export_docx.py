@@ -602,11 +602,7 @@ if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
     files_to_export = [
-        ("BAO_CAO_TONG_THE_DU_AN.md", "BAO_CAO_TONG_THE_DU_AN.docx", "Báo Cáo Tổng Thể Dự Án"),
         ("BAO_CAO_TONG_THE_DU_AN.md", "BAO_CAO_CONG_VIEC_6_TUAN_DATA_ENGINEERING.docx", "Báo Cáo Công Việc 6 Tuần Data Engineering"),
-        ("BO_20_CAU_HOI_PHAN_BIEN_MENTOR.md", "BO_20_CAU_HOI_PHAN_BIEN_MENTOR.docx", "Bộ Câu Hỏi Phản Biện Mentor"),
-        ("HUONG_DAN_CHAY_DU_AN.md", "HUONG_DAN_CHAY_DU_AN.docx", "Hướng Dẫn Vận Hành Dự Án"),
-        ("ROADMAP_COMPLIANCE.md", "ROADMAP_COMPLIANCE.docx", "Ma Trận Tuân Thủ Roadmap"),
     ]
     
     for md_name, docx_name, title in files_to_export:
