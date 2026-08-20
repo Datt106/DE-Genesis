@@ -23,7 +23,7 @@ function Resolve-Docker {
         return $fallback
     }
 
-    throw "Khong tim thay docker.exe. Hay cai Docker Desktop hoac mo PowerShell moi sau khi cai."
+    throw "Không tìm thấy docker.exe. Hãy cài Docker Desktop hoặc mở PowerShell mới sau khi cài."
 }
 
 $docker = Resolve-Docker
@@ -42,3 +42,6 @@ if ($RemoveVolumes) {
 }
 
 & $docker @composeArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Không thể dừng môi trường Docker Compose."
+}

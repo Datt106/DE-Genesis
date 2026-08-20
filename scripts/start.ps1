@@ -25,14 +25,19 @@ function Resolve-Docker {
         return $fallback
     }
 
-    throw "Khong tim thay docker.exe. Hay cai Docker Desktop hoac mo PowerShell moi sau khi cai."
+    throw "Không tìm thấy docker.exe. Hãy cài Docker Desktop hoặc mở PowerShell mới sau khi cài."
 }
 
 $docker = Resolve-Docker
 
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
-    Write-Host "Da tao .env tu .env.example"
+    Write-Host "Đã tạo .env từ .env.example"
+}
+
+& $docker info --format "{{.ServerVersion}}" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker Engine chưa sẵn sàng. Hãy mở Docker Desktop và chờ engine khởi động xong."
 }
 
 $profileMap = @{
@@ -54,5 +59,10 @@ if ($Build) {
     $composeArgs += "--build"
 }
 
-Write-Host "Dang khoi dong moi truong $Target..."
+Write-Host "Đang khởi động môi trường $Target..."
 & $docker @composeArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Không thể khởi động môi trường $Target. Hãy xem log Docker Compose ở phía trên."
+}
+
+Write-Host "Đã gửi lệnh khởi động. Dùng 'docker compose ps' để theo dõi health check."

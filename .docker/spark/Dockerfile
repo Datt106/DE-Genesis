@@ -9,4 +9,6 @@ ENV PATH="/usr/local/bin:${PATH}" \
     PYSPARK_DRIVER_PYTHON=/usr/local/bin/python3.11 \
     PYSPARK_PYTHON=/usr/local/bin/python3.11
 
+RUN /usr/local/bin/pip install --no-cache-dir "psycopg2-binary==2.9.9"
+
 USER spark

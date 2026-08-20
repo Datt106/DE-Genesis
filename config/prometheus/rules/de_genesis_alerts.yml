@@ -10,6 +10,15 @@ groups:
           summary: Pipeline metrics exporter không sẵn sàng
           description: Prometheus không scrape được pipeline-metrics trong ít nhất 1 phút.
 
+      - alert: PipelineMetricsCollectionError
+        expr: de_genesis_metrics_collection_error == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Không thu thập được nhóm metric {{ $labels.source }}"
+          description: Exporter kết nối được PostgreSQL nhưng truy vấn nhóm bảng metric đang lỗi.
+
       - alert: PipelineDependencyDown
         expr: de_genesis_dependency_up == 0
         for: 2m
@@ -38,13 +47,76 @@ groups:
           description: "Run gần nhất có {{ $value }} quality check blocking thất bại."
 
       - alert: PipelineStale
-        expr: time() - de_genesis_pipeline_last_success_timestamp_seconds > 93600
+        expr: time() - de_genesis_pipeline_last_success_timestamp_seconds{pipeline_name!="de_genesis_week5_nifi_downstream"} > 93600
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: "{{ $labels.pipeline_name }} không có run thành công mới"
-          description: Lần thành công gần nhất đã cách hiện tại hơn 26 giờ.
+          description: Lần thành công gần nhất của pipeline có lịch đã cách hiện tại hơn 26 giờ; DAG NiFi event-driven được loại trừ.
+
+      - alert: PipelineRunStuck
+        expr: de_genesis_pipeline_running > 0
+        for: 50m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.pipeline_name }} chạy quá thời gian cho phép"
+          description: Pipeline còn run chưa kết thúc quá 50 phút, vượt execution timeout thông thường.
+
+      - alert: LogIngestionDelayExceeded
+        expr: de_genesis_log_ingestion_lag_seconds > 60
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Độ trễ ghi log vượt SLA 1 phút
+          description: "Độ trễ của {{ $labels.query_name }} hiện là {{ $value }} giây."
+
+      - alert: LogStreamStopped
+        expr: absent(de_genesis_log_stream_last_batch_timestamp_seconds) or de_genesis_log_stream_last_batch_timestamp_seconds == 0 or time() - de_genesis_log_stream_last_batch_timestamp_seconds > 75
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Streaming log không tạo micro-batch mới
+          description: "{{ $labels.query_name }} không hoàn tất micro-batch mới trong hơn 75 giây."
+
+      - alert: LogStreamBatchFailed
+        expr: de_genesis_log_stream_last_batch_success == 0 and de_genesis_log_stream_last_batch_timestamp_seconds > 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Micro-batch log gần nhất thất bại
+          description: "{{ $labels.query_name }} cần được kiểm tra và khởi động lại."
+
+      - alert: LogInvalidRecordsDetected
+        expr: de_genesis_log_stream_last_invalid_records > 0
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: Micro-batch log có bản ghi không hợp lệ
+          description: "{{ $labels.query_name }} đã đưa {{ $value }} bản ghi vào quarantine."
+
+      - alert: LogReportRunFailed
+        expr: de_genesis_log_report_last_run_success == 0 and de_genesis_log_report_last_run_timestamp_seconds > 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Run báo cáo log gần nhất thất bại
+          description: Airflow không publish được báo cáo requests/phút hoặc phân bố status.
+
+      - alert: LogReportStale
+        expr: absent(de_genesis_log_report_last_success_timestamp_seconds) or de_genesis_log_report_last_success_timestamp_seconds == 0 or time() - de_genesis_log_report_last_success_timestamp_seconds > 420
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: Báo cáo log chậm hơn lịch chạy
+          description: Không có báo cáo log thành công mới trong hơn 7 phút, vượt lịch Airflow 5 phút.
 
       - alert: SparkWorkerUnavailable
         expr: up{job="spark-worker"} == 0

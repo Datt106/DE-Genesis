@@ -23,6 +23,24 @@ x-airflow-common: &airflow-common
     MOCK_API_URL: http://mock-api:8000
     AIRFLOW_API_USERNAME: ${AIRFLOW_API_USERNAME:-admin}
     AIRFLOW_API_PASSWORD: ${AIRFLOW_API_PASSWORD:-admin}
+    WEEK5_API_PAGE_SIZE: ${WEEK5_API_PAGE_SIZE:-100}
+    HDFS_NAMENODE: hdfs://namenode:9000
+    HDFS_REPLICATION: ${HDFS_REPLICATION:-1}
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    WEEK6_LOG_TOPIC: ${WEEK6_LOG_TOPIC:-week6-service-logs}
+    WEEK6_LOG_GENERATION_ID: ${WEEK6_LOG_GENERATION_ID:-local-v1}
+    WEEK6_LOG_STARTING_OFFSETS: ${WEEK6_LOG_STARTING_OFFSETS:-earliest}
+    WEEK6_LOG_MICRO_BATCH_SECONDS: ${WEEK6_LOG_MICRO_BATCH_SECONDS:-30}
+    WEEK6_LOG_MAX_EVENT_DELAY_SECONDS: ${WEEK6_LOG_MAX_EVENT_DELAY_SECONDS:-120}
+    WEEK6_LOG_REPORT_SETTLEMENT_SECONDS: ${WEEK6_LOG_REPORT_SETTLEMENT_SECONDS:-180}
+    WEEK6_LOG_REPORT_MAX_CORES: ${WEEK6_LOG_REPORT_MAX_CORES:-1}
+    WEEK6_LOG_CHECKPOINT: ${WEEK6_LOG_CHECKPOINT:-hdfs://namenode:9000/data/week6/checkpoints/service-logs}
+    WEEK6_LOG_RAW_PATH: ${WEEK6_LOG_RAW_PATH:-hdfs://namenode:9000/data/week6/raw/service-logs}
+    WEEK6_LOG_REPORT_PATH: ${WEEK6_LOG_REPORT_PATH:-hdfs://namenode:9000/data/week6/reports/live}
+    WEEK6_LOG_CLOSED_REPORT_PATH: ${WEEK6_LOG_CLOSED_REPORT_PATH:-hdfs://namenode:9000/data/week6/reports/closed}
+    WEEK6_LOG_REPORT_STAGING_PATH: ${WEEK6_LOG_REPORT_STAGING_PATH:-hdfs://namenode:9000/data/week6/reports/_staging/closed}
+    WEEK6_NAMENODE_WEBHDFS_URL: ${WEEK6_NAMENODE_WEBHDFS_URL:-http://namenode:9870}
+    WEEK6_HDFS_USER: ${WEEK6_HDFS_USER:-root}
     WEEK6_INVALID_RATE_THRESHOLD: ${WEEK6_INVALID_RATE_THRESHOLD:-0}
   depends_on:
     postgres:
@@ -42,6 +60,7 @@ services:
       context: .
       dockerfile: mock_api/Dockerfile
     container_name: de-genesis-mock-api
+    restart: unless-stopped
     environment:
       PROMOTION_SEED_FILE: /data/olist/olist_products_dataset.csv
     healthcheck:
@@ -62,7 +81,9 @@ services:
     build:
       context: .
       dockerfile: .docker/workspace/Dockerfile
+    image: de-genesis-workspace:local
     container_name: de-genesis-workspace
+    restart: unless-stopped
     command: sleep infinity
     depends_on:
       mysql:
@@ -71,6 +92,7 @@ services:
         condition: service_healthy
     environment:
       HDFS_NAMENODE: hdfs://namenode:9000
+      HDFS_REPLICATION: ${HDFS_REPLICATION:-1}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       MYSQL_DATABASE: ${MYSQL_DATABASE:-de_roadmap}
       MYSQL_HOST: mysql
@@ -86,6 +108,7 @@ services:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: /workspace
       SPARK_MASTER_URL: spark://spark-master:7077
+      WEEK5_API_PAGE_SIZE: ${WEEK5_API_PAGE_SIZE:-100}
     networks:
       - de-genesis
     ports:
@@ -96,6 +119,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: de-genesis-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-de_roadmap}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-de_password}
@@ -111,12 +135,16 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./exercises/week5/sql/create_week5_schemas.sql:/docker-entrypoint-initdb.d/20-week5.sql:ro
+      - ./exercises/week6/sql/create_week6_schemas.sql:/docker-entrypoint-initdb.d/30-week6.sql:ro
 
   mysql:
     image: mysql:8.0
     container_name: de-genesis-mysql
-    command: --default-authentication-plugin=mysql_native_password
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --log-bin-trust-function-creators=1
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-de_roadmap}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-de_password}
@@ -138,6 +166,7 @@ services:
   namenode:
     image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
     container_name: de-genesis-namenode
+    restart: unless-stopped
     environment:
       CLUSTER_NAME: de-genesis
       CORE_CONF_fs_defaultFS: hdfs://namenode:9000
@@ -160,6 +189,7 @@ services:
   datanode:
     image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
     container_name: de-genesis-datanode
+    restart: unless-stopped
     depends_on:
       - namenode
     environment:
@@ -184,6 +214,7 @@ services:
       dockerfile: .docker/spark/Dockerfile
     image: de-genesis-spark:3.5.1-python3.11
     container_name: de-genesis-spark-master
+    restart: unless-stopped
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master", "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
     environment:
       SPARK_MASTER_OPTS: -Dspark.ui.prometheus.enabled=true
@@ -211,6 +242,7 @@ services:
       dockerfile: .docker/spark/Dockerfile
     image: de-genesis-spark:3.5.1-python3.11
     container_name: de-genesis-spark-worker
+    restart: unless-stopped
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077", "--webui-port", "8081"]
     depends_on:
       - spark-master
@@ -236,6 +268,7 @@ services:
   kafka:
     image: confluentinc/cp-kafka:7.6.1
     container_name: de-genesis-kafka
+    restart: unless-stopped
     environment:
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:${KAFKA_PORT:-9092}
@@ -266,6 +299,161 @@ services:
     volumes:
       - kafka_data:/var/lib/kafka/data
 
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: de-genesis-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SERVICE_LOG_PARTITIONS: ${SERVICE_LOG_PARTITIONS:-3}
+      SERVICE_LOG_TOPIC: ${SERVICE_LOG_TOPIC:-service-logs}
+      WEEK6_LOG_PARTITIONS: ${WEEK6_LOG_PARTITIONS:-3}
+      WEEK6_LOG_TOPIC: ${WEEK6_LOG_TOPIC:-week6-service-logs}
+    command:
+      - bash
+      - -ec
+      - |
+        ensure_topic() {
+          topic="$$1"
+          required="$$2"
+          case "$$required" in
+            ''|*[!0-9]*|0) echo "Số partition không hợp lệ cho $$topic: $$required" >&2; exit 1 ;;
+          esac
+
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+            --topic "$$topic" --partitions "$$required" --replication-factor 1
+
+          current="$$(kafka-topics --bootstrap-server kafka:29092 --describe \
+            --topic "$$topic" | grep -m1 -o 'PartitionCount: [0-9]*' | awk '{print $$2}' || true)"
+          case "$$current" in
+            ''|*[!0-9]*) echo "Không đọc được số partition của $$topic" >&2; exit 1 ;;
+          esac
+          if [ "$$current" -lt "$$required" ]; then
+            kafka-topics --bootstrap-server kafka:29092 --alter \
+              --topic "$$topic" --partitions "$$required"
+          fi
+
+          final="$$(kafka-topics --bootstrap-server kafka:29092 --describe \
+            --topic "$$topic" | grep -m1 -o 'PartitionCount: [0-9]*' | awk '{print $$2}' || true)"
+          if [ -z "$$final" ] || [ "$$final" -lt "$$required" ]; then
+            echo "Topic $$topic chưa hội tụ: actual=$${final:-unknown}, required=$$required" >&2
+            exit 1
+          fi
+          echo "Topic $$topic đã sẵn sàng với $$final partition (yêu cầu tối thiểu $$required)."
+        }
+
+        ensure_topic "$$SERVICE_LOG_TOPIC" "$$SERVICE_LOG_PARTITIONS"
+        ensure_topic "$$WEEK6_LOG_TOPIC" "$$WEEK6_LOG_PARTITIONS"
+    networks:
+      - de-genesis
+    profiles:
+      - streaming
+      - workflow
+      - monitoring
+
+  week6-log-producer:
+    image: de-genesis-workspace:local
+    container_name: de-genesis-week6-log-producer
+    command:
+      - python
+      - -m
+      - exercises.week6.log_producer
+      - --topic
+      - ${WEEK6_LOG_TOPIC:-week6-service-logs}
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      PYTHONPATH: /workspace
+      PYTHONUNBUFFERED: "1"
+      WEEK6_LOG_TOPIC: ${WEEK6_LOG_TOPIC:-week6-service-logs}
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'exercises.week6.log_producer' >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - de-genesis
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    volumes:
+      - ./:/workspace:ro
+
+  week6-log-streaming:
+    image: de-genesis-spark:3.5.1-python3.11
+    container_name: de-genesis-week6-log-streaming
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - spark://spark-master:7077
+      - --conf
+      - spark.driver.host=week6-log-streaming
+      - --conf
+      - spark.driver.bindAddress=0.0.0.0
+      - --conf
+      - spark.executorEnv.PYTHONPATH=/workspace
+      - --conf
+      - spark.jars.ivy=/tmp/.ivy2
+      - --conf
+      - spark.cores.max=${WEEK6_LOG_STREAM_MAX_CORES:-1}
+      - --conf
+      - spark.hadoop.dfs.replication=${HDFS_REPLICATION:-1}
+      - --conf
+      - spark.sql.shuffle.partitions=4
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.postgresql:postgresql:42.7.3
+      - /workspace/exercises/week6/spark/stream_service_logs.py
+    depends_on:
+      datanode:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      spark-master:
+        condition: service_started
+      spark-worker:
+        condition: service_started
+    environment:
+      HDFS_NAMENODE: hdfs://namenode:9000
+      HDFS_REPLICATION: ${HDFS_REPLICATION:-1}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      POSTGRES_DB: ${POSTGRES_DB:-de_roadmap}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-de_password}
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-de_user}
+      PYSPARK_PYTHON: /usr/local/bin/python3.11
+      PYTHONPATH: /workspace
+      SPARK_DRIVER_HOST: week6-log-streaming
+      SPARK_MASTER_URL: spark://spark-master:7077
+      WEEK6_LOG_CHECKPOINT: ${WEEK6_LOG_CHECKPOINT:-hdfs://namenode:9000/data/week6/checkpoints/service-logs}
+      WEEK6_LOG_GENERATION_ID: ${WEEK6_LOG_GENERATION_ID:-local-v1}
+      WEEK6_LOG_MICRO_BATCH_SECONDS: ${WEEK6_LOG_MICRO_BATCH_SECONDS:-30}
+      WEEK6_LOG_MAX_EVENT_DELAY_SECONDS: ${WEEK6_LOG_MAX_EVENT_DELAY_SECONDS:-120}
+      WEEK6_LOG_STARTING_OFFSETS: ${WEEK6_LOG_STARTING_OFFSETS:-earliest}
+      WEEK6_LOG_STREAM_MAX_CORES: ${WEEK6_LOG_STREAM_MAX_CORES:-1}
+      WEEK6_LOG_RAW_PATH: ${WEEK6_LOG_RAW_PATH:-hdfs://namenode:9000/data/week6/raw/service-logs}
+      WEEK6_LOG_REPORT_PATH: ${WEEK6_LOG_REPORT_PATH:-hdfs://namenode:9000/data/week6/reports/live}
+      WEEK6_LOG_TOPIC: ${WEEK6_LOG_TOPIC:-week6-service-logs}
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'stream_service_logs.py' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    networks:
+      - de-genesis
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    volumes:
+      - ./:/workspace:ro
+
   airflow-init:
     <<: *airflow-common
     container_name: de-genesis-airflow-init
@@ -282,6 +470,7 @@ services:
   airflow-webserver:
     <<: *airflow-common
     container_name: de-genesis-airflow-webserver
+    restart: unless-stopped
     command: webserver
     depends_on:
       airflow-init:
@@ -290,12 +479,19 @@ services:
         condition: service_healthy
       mock-api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
     ports:
       - "${AIRFLOW_PORT:-8088}:8080"
 
   airflow-scheduler:
     <<: *airflow-common
     container_name: de-genesis-airflow-scheduler
+    restart: unless-stopped
     command: scheduler
     depends_on:
       airflow-init:
@@ -304,6 +500,12 @@ services:
         condition: service_healthy
       mock-api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 45s
 
   nifi:
     build:
@@ -311,6 +513,7 @@ services:
       dockerfile: .docker/nifi/Dockerfile
     image: de-genesis-nifi:local
     container_name: de-genesis-nifi
+    restart: unless-stopped
     environment:
       NIFI_WEB_HTTPS_PORT: 8443
       SINGLE_USER_CREDENTIALS_PASSWORD: ${NIFI_PASSWORD:-admin_password_123}
@@ -325,7 +528,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-de_user}
     depends_on:
       airflow-webserver:
-        condition: service_started
+        condition: service_healthy
       mock-api:
         condition: service_healthy
       postgres:
@@ -347,6 +550,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: de-genesis-prometheus
+    restart: unless-stopped
     depends_on:
       pipeline-metrics:
         condition: service_healthy
@@ -370,11 +574,8 @@ services:
       context: .
       dockerfile: exercises/week6/monitoring/Dockerfile
     container_name: de-genesis-pipeline-metrics
+    restart: unless-stopped
     depends_on:
-      airflow-webserver:
-        condition: service_started
-      mock-api:
-        condition: service_healthy
       postgres:
         condition: service_healthy
     environment:
@@ -387,6 +588,7 @@ services:
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER:-de_user}
       SPARK_HEALTH_URL: http://spark-master:8080
+      WEEK6_LOG_QUERY_NAME: de_genesis_week6_service_logs
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9108/metrics')"]
       interval: 10s
@@ -402,6 +604,7 @@ services:
   grafana:
     image: grafana/grafana:10.4.3
     container_name: de-genesis-grafana
+    restart: unless-stopped
     depends_on:
       - prometheus
     environment:

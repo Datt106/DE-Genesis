@@ -12,6 +12,7 @@ spark-warehouse/
 metastore_db/
 derby.log
 *.log
-data/olist/
+data/olist/*
+!data/olist/README.md
 ~$*.docx
 ~WRL*.tmp
